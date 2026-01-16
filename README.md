@@ -20,6 +20,8 @@ A multiplatform Hytale launcher with online mode support, auto-updater, game fet
 
 ## Prerequisites
 
+**Note**: The background video asset (`frontend/src/assets/background.mp4`) is not included in the repository due to GitHub's file size limits. The launcher will work without it, or you can add your own background video.
+
 - [Go 1.23+](https://golang.org/dl/)
 - [Node.js 18+](https://nodejs.org/)
 - [Wails v2](https://wails.io/docs/gettingstarted/installation)
