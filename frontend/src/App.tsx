@@ -25,7 +25,10 @@ import {
   GetSelectedVersion,
   SetSelectedVersion,
   GetVersionList,
-  IsVersionInstalled
+  IsVersionInstalled,
+  GetInstalledVersionsForBranch,
+  GetCustomInstanceDir,
+  SetCustomInstanceDir
 } from '../wailsjs/go/app/App';
 import { EventsOn } from '../wailsjs/runtime/runtime';
 
@@ -55,9 +58,11 @@ const App: React.FC = () => {
   const [currentBranch, setCurrentBranch] = useState<string>("release");
   const [currentVersion, setCurrentVersion] = useState<number>(0);
   const [availableVersions, setAvailableVersions] = useState<number[]>([]);
+  const [installedVersions, setInstalledVersions] = useState<number[]>([]);
   const [isLoadingVersions, setIsLoadingVersions] = useState<boolean>(false);
   const [isVersionInstalled, setIsVersionInstalled] = useState<boolean>(false);
   const [isCheckingInstalled, setIsCheckingInstalled] = useState<boolean>(false);
+  const [customInstanceDir, setCustomInstanceDir] = useState<string>("");
 
   // Check if current version is installed when branch or version changes
   useEffect(() => {
@@ -86,6 +91,11 @@ const App: React.FC = () => {
       try {
         const versions = await GetVersionList(currentBranch);
         setAvailableVersions(versions);
+        
+        // Load installed versions
+        const installed = await GetInstalledVersionsForBranch(currentBranch);
+        setInstalledVersions(installed);
+        
         // If current version is not valid for this branch, set to latest
         if (!versions.includes(currentVersion) && versions.length > 0) {
           setCurrentVersion(versions[0]);
@@ -94,6 +104,7 @@ const App: React.FC = () => {
       } catch (e) {
         console.error('Failed to load versions:', e);
         setAvailableVersions([]);
+        setInstalledVersions([]);
       }
       setIsLoadingVersions(false);
     };
@@ -148,6 +159,7 @@ const App: React.FC = () => {
   useEffect(() => {
     // Initialize user settings
     GetNick().then((n: string) => n && setUsername(n));
+    GetCustomInstanceDir().then((dir: string) => setCustomInstanceDir(dir));
     
     // Load saved branch and version - must load branch first, then version
     const loadSettings = async () => {
@@ -161,6 +173,10 @@ const App: React.FC = () => {
         setIsLoadingVersions(true);
         const versions = await GetVersionList(branch);
         setAvailableVersions(versions);
+        
+        // Load installed versions
+        const installed = await GetInstalledVersionsForBranch(branch);
+        setInstalledVersions(installed);
         
         // Get saved version
         const savedVersion = await GetSelectedVersion();

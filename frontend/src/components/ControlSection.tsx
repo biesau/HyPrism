@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { FolderOpen, Play, Package, Square, Github, Bug, GitBranch, Loader2, Download, ChevronDown, Check } from 'lucide-react';
+import { FolderOpen, Play, Package, Square, Github, Bug, GitBranch, Loader2, Download, ChevronDown, Check, Settings } from 'lucide-react';
 import { BrowserOpenURL } from '../../wailsjs/runtime/runtime';
 
 interface ControlSectionProps {
@@ -15,10 +15,13 @@ interface ControlSectionProps {
   currentBranch: string;
   currentVersion: number;
   availableVersions: number[];
+  installedVersions?: number[];
   isLoadingVersions?: boolean;
   isCheckingInstalled?: boolean;
   onBranchChange: (branch: string) => void;
   onVersionChange: (version: number) => void;
+  customInstanceDir?: string;
+  onCustomDirChange?: (dir: string) => void;
   actions: {
     openFolder: () => void;
     showDelete: () => void;
@@ -62,10 +65,13 @@ export const ControlSection: React.FC<ControlSectionProps> = ({
   currentBranch,
   currentVersion,
   availableVersions,
+  installedVersions = [],
   isLoadingVersions,
   isCheckingInstalled,
   onBranchChange,
   onVersionChange,
+  customInstanceDir,
+  onCustomDirChange,
   actions
 }) => {
   const [isBranchOpen, setIsBranchOpen] = useState(false);
@@ -187,7 +193,7 @@ export const ControlSection: React.FC<ControlSectionProps> = ({
             title="Select Version"
           >
             <span className="text-sm font-medium">
-              {isLoadingVersions ? '...' : `v${currentVersion}`}
+              {isLoadingVersions ? '...' : currentVersion === 0 ? 'latest' : `v${currentVersion}`}
             </span>
             <ChevronDown 
               size={12} 
@@ -197,22 +203,34 @@ export const ControlSection: React.FC<ControlSectionProps> = ({
 
           {/* Version Dropdown Menu (opens up) */}
           {isVersionOpen && (
-            <div className="absolute bottom-full right-0 mb-2 z-[100] min-w-[100px] max-h-60 overflow-y-auto bg-[#1a1a1a] backdrop-blur-xl border border-white/10 rounded-xl shadow-xl shadow-black/50">
+            <div className="absolute bottom-full right-0 mb-2 z-[100] min-w-[120px] max-h-60 overflow-y-auto bg-[#1a1a1a] backdrop-blur-xl border border-white/10 rounded-xl shadow-xl shadow-black/50">
               {availableVersions.length > 0 ? (
-                availableVersions.map((version) => (
-                  <button
-                    key={version}
-                    onClick={() => handleVersionSelect(version)}
-                    className={`w-full px-3 py-2 flex items-center gap-2 text-sm ${
-                      currentVersion === version 
-                        ? 'bg-[#FFA845]/20 text-[#FFA845]' 
-                        : 'text-white/70 hover:bg-white/10 hover:text-white'
-                    }`}
-                  >
-                    {currentVersion === version && <Check size={12} className="text-[#FFA845]" />}
-                    <span className={currentVersion === version ? '' : 'ml-5'}>v{version}</span>
-                  </button>
-                ))
+                availableVersions.map((version) => {
+                  const isInstalled = installedVersions.includes(version) || version === 0;
+                  return (
+                    <button
+                      key={version}
+                      onClick={() => handleVersionSelect(version)}
+                      className={`w-full px-3 py-2 flex items-center justify-between gap-2 text-sm ${
+                        currentVersion === version 
+                          ? 'bg-[#FFA845]/20 text-[#FFA845]' 
+                          : 'text-white/70 hover:bg-white/10 hover:text-white'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2">
+                        {currentVersion === version && <Check size={12} className="text-[#FFA845]" />}
+                        <span className={currentVersion === version ? '' : 'ml-5'}>
+                          {version === 0 ? 'latest' : `v${version}`}
+                        </span>
+                      </div>
+                      {isInstalled && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-500/20 text-green-400 font-medium">
+                          {version === 0 ? 'latest' : '✓'}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })
               ) : (
                 <div className="px-3 py-2 text-sm text-white/40">No versions</div>
               )}
@@ -225,6 +243,20 @@ export const ControlSection: React.FC<ControlSectionProps> = ({
       <div className="flex gap-3 items-center">
         <NavBtn onClick={actions.showModManager} icon={<Package size={20} />} tooltip="Mod Manager" />
         <NavBtn onClick={actions.openFolder} icon={<FolderOpen size={20} />} tooltip="Open Folder" />
+        <NavBtn 
+          onClick={() => {
+            if (onCustomDirChange) {
+              // Open folder picker dialog using runtime
+              // For now, show alert that directs user to use wails file dialog
+              const newDir = prompt('Enter custom instances directory path (leave empty for default):');
+              if (newDir !== null) {
+                onCustomDirChange(newDir);
+              }
+            }
+          }} 
+          icon={<Settings size={20} />} 
+          tooltip={customInstanceDir ? `Instances: ${customInstanceDir}` : "Settings (Default location)"} 
+        />
         <NavBtn onClick={openGitHub} icon={<Github size={20} />} tooltip="GitHub" />
         <NavBtn onClick={openBugReport} icon={<Bug size={20} />} tooltip="Report Bug" />
         

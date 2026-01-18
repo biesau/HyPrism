@@ -372,16 +372,17 @@ func (a *App) GetAvailableVersions() map[string]int {
 	return versions
 }
 
-// GetVersionList returns all available version numbers for a branch (from latest down to 1)
+// GetVersionList returns all available version numbers for a branch (latest=0, then specific versions)
 func (a *App) GetVersionList(branch string) []int {
 	latest := pwr.FindLatestVersion(branch)
 	if latest <= 0 {
-		return []int{}
+		return []int{0} // Always include version 0 (latest auto-updating instance)
 	}
-	// Return versions from latest to 1 (newest first)
-	versions := make([]int, latest)
+	// Return versions: 0 (latest), then latest down to 1 (newest first)
+	versions := make([]int, latest+1)
+	versions[0] = 0 // Version 0 = auto-updating latest
 	for i := 0; i < latest; i++ {
-		versions[i] = latest - i
+		versions[i+1] = latest - i
 	}
 	return versions
 }
