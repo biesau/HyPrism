@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { FolderOpen, Play, Package, Square, Github, Bug, GitBranch, Loader2, Download, ChevronDown, Check, Settings } from 'lucide-react';
+import { FolderOpen, Play, Package, Square, Github, Bug, GitBranch, Loader2, Download, ChevronDown, HardDrive, Check } from 'lucide-react';
 import { BrowserOpenURL } from '../../wailsjs/runtime/runtime';
 
 interface ControlSectionProps {
@@ -122,8 +122,8 @@ export const ControlSection: React.FC<ControlSectionProps> = ({
 
   const branchLabel = currentBranch === 'release' ? 'Release' : 'Pre-Release';
 
-  // Calculate width to match 4 nav buttons (48px each) + 3 gaps (12px each) = 228px
-  const selectorWidth = 'w-[228px]';
+  // Calculate width to fit content properly
+  const selectorWidth = 'w-[290px]';
 
   return (
     <div className="flex flex-col gap-3">
@@ -168,8 +168,8 @@ export const ControlSection: React.FC<ControlSectionProps> = ({
                       : 'text-white/70 hover:bg-white/10 hover:text-white'
                   }`}
                 >
-                  {currentBranch === branch && <Check size={12} className="text-white" />}
-                  <span className={currentBranch === branch ? '' : 'ml-5'}>{branch === 'release' ? 'Release' : 'Pre-Release'}</span>
+                  {currentBranch === branch && <Check size={14} className="text-white" strokeWidth={3} />}
+                  <span className={currentBranch === branch ? '' : 'ml-[22px]'}>{branch === 'release' ? 'Release' : 'Pre-Release'}</span>
                 </button>
               ))}
             </div>
@@ -208,7 +208,7 @@ export const ControlSection: React.FC<ControlSectionProps> = ({
             <div className="absolute bottom-full right-0 mb-2 z-[100] min-w-[120px] max-h-60 overflow-y-auto bg-[#1a1a1a] backdrop-blur-xl border border-white/10 rounded-xl shadow-xl shadow-black/50">
               {availableVersions.length > 0 ? (
                 availableVersions.map((version) => {
-                  const isInstalled = installedVersions.includes(version) || version === 0;
+                  const isInstalled = (installedVersions || []).includes(version) || version === 0;
                   return (
                     <button
                       key={version}
@@ -220,8 +220,10 @@ export const ControlSection: React.FC<ControlSectionProps> = ({
                       }`}
                     >
                       <div className="flex items-center gap-2">
-                        {currentVersion === version && <Check size={12} className="text-[#FFA845]" />}
-                        <span className={currentVersion === version ? '' : 'ml-5'}>
+                        {currentVersion === version && (
+                          <Check size={14} className="text-[#FFA845]" strokeWidth={3} />
+                        )}
+                        <span className={currentVersion === version ? '' : 'ml-[22px]'}>
                           {version === 0 ? 'latest' : `v${version}`}
                         </span>
                       </div>
@@ -244,20 +246,18 @@ export const ControlSection: React.FC<ControlSectionProps> = ({
       {/* Row 2: Nav buttons */}
       <div className="flex gap-3 items-center">
         <NavBtn onClick={actions.showModManager} icon={<Package size={20} />} tooltip="Mod Manager" />
-        <NavBtn onClick={actions.openFolder} icon={<FolderOpen size={20} />} tooltip="Open Folder" />
+        <NavBtn onClick={actions.openFolder} icon={<FolderOpen size={20} />} tooltip="Open Instance Folder" />
         <NavBtn 
           onClick={() => {
             if (onCustomDirChange) {
-              // Open folder picker dialog using runtime
-              // For now, show alert that directs user to use wails file dialog
               const newDir = prompt('Enter custom instances directory path (leave empty for default):');
               if (newDir !== null) {
                 onCustomDirChange(newDir);
               }
             }
           }} 
-          icon={<Settings size={20} />} 
-          tooltip={customInstanceDir ? `Instances: ${customInstanceDir}` : "Settings (Default location)"} 
+          icon={<HardDrive size={20} />} 
+          tooltip="Default Location" 
         />
         <NavBtn onClick={openGitHub} icon={<Github size={20} />} tooltip="GitHub" />
         <NavBtn onClick={openBugReport} icon={<Bug size={20} />} tooltip="Report Bug" />

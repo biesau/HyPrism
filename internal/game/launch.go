@@ -86,10 +86,14 @@ func LaunchInstance(playerName string, branch string, version int) error {
 			"--name", playerName,
 		)
 	} else if runtime.GOOS == "windows" {
+		// Add Java networking properties to allow localhost connections
+		// This fixes "Failed to connect to server" errors in singleplayer on Windows
 		cmd = exec.Command(clientPath,
 			"--app-dir", gameDir,
 			"--user-dir", userDataDir,
 			"--java-exec", jrePath,
+			"--java-args", "-Djava.net.preferIPv4Stack=true",
+			"--java-args", "-Dnetworkaddress.cache.ttl=0",
 			"--auth-mode", "offline",
 			"--uuid", "00000000-1337-1337-1337-000000000000",
 			"--name", playerName,

@@ -8,6 +8,8 @@ import {news} from '../models';
 
 export function CheckInstanceModUpdates(arg1:string,arg2:number):Promise<Array<mods.Mod>>;
 
+export function CheckLatestNeedsUpdate(arg1:string):Promise<boolean>;
+
 export function CheckModUpdates():Promise<Array<mods.Mod>>;
 
 export function CheckUpdate():Promise<updater.Asset>;

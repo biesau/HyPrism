@@ -6,6 +6,10 @@ export function CheckInstanceModUpdates(arg1, arg2) {
   return window['go']['app']['App']['CheckInstanceModUpdates'](arg1, arg2);
 }
 
+export function CheckLatestNeedsUpdate(arg1) {
+  return window['go']['app']['App']['CheckLatestNeedsUpdate'](arg1);
+}
+
 export function CheckModUpdates() {
   return window['go']['app']['App']['CheckModUpdates']();
 }

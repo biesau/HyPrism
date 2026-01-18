@@ -27,8 +27,6 @@ import {
   GetVersionList,
   IsVersionInstalled,
   GetInstalledVersionsForBranch,
-  GetCustomInstanceDir,
-  SetCustomInstanceDir,
   CheckLatestNeedsUpdate
 } from '../wailsjs/go/app/App';
 import { EventsOn } from '../wailsjs/runtime/runtime';
@@ -63,22 +61,34 @@ const App: React.FC = () => {
   const [isLoadingVersions, setIsLoadingVersions] = useState<boolean>(false);
   const [isVersionInstalled, setIsVersionInstalled] = useState<boolean>(false);
   const [isCheckingInstalled, setIsCheckingInstalled] = useState<boolean>(false);
-  const [customInstanceDir, setCustomInstanceDir] = useState<string>("");
+  // const [customInstanceDir, setCustomInstanceDir] = useState<string>("");
   const [latestNeedsUpdate, setLatestNeedsUpdate] = useState<boolean>(false);
 
   // Check if current version is installed when branch or version changes
   useEffect(() => {
     const checkInstalled = async () => {
-      if (currentVersion <= 0) {
-        setIsVersionInstalled(false);
-        // Check if latest needs update
+      if (currentVersion === 0) {
+        // Version 0 is the auto-updating "latest" instance
+        // Check if it's actually installed
+        setIsCheckingInstalled(true);
         try {
+          const installed = await IsVersionInstalled(currentBranch, 0);
+          setIsVersionInstalled(installed);
+          // Check if latest needs update
           const needsUpdate = await CheckLatestNeedsUpdate(currentBranch);
           setLatestNeedsUpdate(needsUpdate);
         } catch (e) {
-          console.error('Failed to check if latest needs update:', e);
+          console.error('Failed to check latest instance:', e);
+          setIsVersionInstalled(false);
           setLatestNeedsUpdate(false);
         }
+        setIsCheckingInstalled(false);
+        return;
+      }
+      if (currentVersion < 0) {
+        // Uninitialized or invalid version
+        setIsVersionInstalled(false);
+        setLatestNeedsUpdate(false);
         return;
       }
       setIsCheckingInstalled(true);
@@ -102,14 +112,14 @@ const App: React.FC = () => {
       setIsLoadingVersions(true);
       try {
         const versions = await GetVersionList(currentBranch);
-        setAvailableVersions(versions);
+        setAvailableVersions(versions || []);
         
         // Load installed versions
         const installed = await GetInstalledVersionsForBranch(currentBranch);
-        setInstalledVersions(installed);
+        setInstalledVersions(installed || []);
         
         // If current version is not valid for this branch, set to latest
-        if (!versions.includes(currentVersion) && versions.length > 0) {
+        if (versions && !versions.includes(currentVersion) && versions.length > 0) {
           setCurrentVersion(versions[0]);
           await SetSelectedVersion(versions[0]);
         }
@@ -171,7 +181,7 @@ const App: React.FC = () => {
   useEffect(() => {
     // Initialize user settings
     GetNick().then((n: string) => n && setUsername(n));
-    GetCustomInstanceDir().then((dir: string) => setCustomInstanceDir(dir));
+    // GetCustomInstanceDir().then((dir: string) => setCustomInstanceDir(dir));
     
     // Load saved branch and version - must load branch first, then version
     const loadSettings = async () => {
@@ -342,7 +352,9 @@ const App: React.FC = () => {
           currentBranch={currentBranch}
           currentVersion={currentVersion}
           availableVersions={availableVersions}
+          installedVersions={installedVersions}
           isLoadingVersions={isLoadingVersions}
+          latestNeedsUpdate={latestNeedsUpdate}
           onBranchChange={handleBranchChange}
           onVersionChange={handleVersionChange}
           actions={{
