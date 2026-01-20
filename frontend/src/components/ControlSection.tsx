@@ -36,7 +36,7 @@ const NavBtn: React.FC<{ onClick?: () => void; icon: React.ReactNode; tooltip?: 
   <button
     onClick={onClick}
     className="w-12 h-12 rounded-xl glass border border-white/5 flex items-center justify-center text-white/60 hover:text-[#FFA845] hover:bg-[#FFA845]/10 active:scale-95 transition-all duration-150 relative group"
-    title={tooltip}
+
   >
     {icon}
     {tooltip && (
@@ -153,7 +153,7 @@ export const ControlSection: React.FC<ControlSectionProps> = ({
               active:scale-95 transition-all duration-150 rounded-l-xl
               ${isBranchOpen ? 'text-white bg-white/10' : ''}
             `}
-            title={t('Select Branch')}
+
           >
             <GitBranch size={16} className="text-white/80" />
             <span className="text-sm font-medium">{branchLabel}</span>
@@ -199,7 +199,7 @@ export const ControlSection: React.FC<ControlSectionProps> = ({
               active:scale-95 transition-all duration-150 rounded-r-xl
               ${isVersionOpen ? 'text-[#FFA845] bg-[#FFA845]/10' : ''}
             `}
-            title={t('Select Version')}
+
           >
             <span className="text-sm font-medium">
               {isLoadingVersions ? '...' : currentVersion === 0 ? t('latest') : `v${currentVersion}`}
@@ -275,7 +275,7 @@ export const ControlSection: React.FC<ControlSectionProps> = ({
         <button
           onClick={openCoffee}
           className="h-12 px-4 rounded-xl glass border border-white/5 flex items-center justify-center gap-2 text-white/60 hover:text-[#FFA845] hover:bg-[#FFA845]/10 active:scale-95 transition-all duration-150 relative group"
-          title={t('Buy Me a Coffee')}
+
         >
           <span className="text-sm font-medium">{t('Buy me a')}</span>
           <Coffee size={20} />
