@@ -8,7 +8,7 @@ import { GetInstanceInstalledMods } from '../../wailsjs/go/app/App';
 interface LanguageSelectorProps {
     currentBranch?: string;
     currentVersion?: number;
-    onShowModManager?: (query: string) => void;
+    onShowModManager?: (query?: string) => void;
 }
 
 export const LanguageSelector: React.FC<LanguageSelectorProps> = ({
