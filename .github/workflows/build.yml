@@ -319,15 +319,15 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y flatpak flatpak-builder
           
-          # Add Flathub remote
+          # Add Flathub remote for user
           echo "Adding Flathub remote..."
-          sudo flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+          flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
           
           # Install required runtime with retries - using GNOME 42 for older distro compatibility
           # GNOME 42 has webkit2gtk-4.0 and works with older GLIBC versions (e.g., PopOS 22.04)
           echo "Installing GNOME Platform 42 (webkit2gtk-4.0 for older distro compatibility)..."
           for i in 1 2 3; do
-            if sudo flatpak install -y --noninteractive flathub org.gnome.Platform//42 org.gnome.Sdk//42; then
+            if flatpak install --user -y --noninteractive flathub org.gnome.Platform//42 org.gnome.Sdk//42; then
               echo "Runtime installed successfully"
               break
             else
@@ -338,8 +338,8 @@ jobs:
           
           # Verify runtime is installed
           echo "Verifying runtime installation..."
-          flatpak list | grep org.gnome.Platform
-          flatpak list | grep org.gnome.Sdk
+          flatpak list --user | grep org.gnome.Platform
+          flatpak list --user | grep org.gnome.Sdk
           
           # Prepare all files in the flatpak directory
           echo "Preparing files..."
