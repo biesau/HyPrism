@@ -187,6 +187,7 @@ jobs:
 
       - name: Create macOS app bundles
         run: |
+          # x64 app bundle
           mkdir -p "artifacts/HyPrism-x64.app/Contents/MacOS"
           mkdir -p "artifacts/HyPrism-x64.app/Contents/Resources"
           cp artifacts/osx-x64/HyPrism "artifacts/HyPrism-x64.app/Contents/MacOS/"
@@ -196,7 +197,14 @@ jobs:
           cp packaging/macos/Info.plist "artifacts/HyPrism-x64.app/Contents/"
           cp packaging/macos/HyPrism.icns "artifacts/HyPrism-x64.app/Contents/Resources/"
           chmod +x "artifacts/HyPrism-x64.app/Contents/MacOS/HyPrism"
+          
+          # Fix rpath for dylib
+          install_name_tool -add_rpath "@executable_path" "artifacts/HyPrism-x64.app/Contents/MacOS/HyPrism" || true
+          
+          # Create PkgInfo
+          echo "APPL????" > "artifacts/HyPrism-x64.app/Contents/PkgInfo"
 
+          # arm64 app bundle
           mkdir -p "artifacts/HyPrism-arm64.app/Contents/MacOS"
           mkdir -p "artifacts/HyPrism-arm64.app/Contents/Resources"
           cp artifacts/osx-arm64/HyPrism "artifacts/HyPrism-arm64.app/Contents/MacOS/"
@@ -206,6 +214,12 @@ jobs:
           cp packaging/macos/Info.plist "artifacts/HyPrism-arm64.app/Contents/"
           cp packaging/macos/HyPrism.icns "artifacts/HyPrism-arm64.app/Contents/Resources/"
           chmod +x "artifacts/HyPrism-arm64.app/Contents/MacOS/HyPrism"
+          
+          # Fix rpath for dylib
+          install_name_tool -add_rpath "@executable_path" "artifacts/HyPrism-arm64.app/Contents/MacOS/HyPrism" || true
+          
+          # Create PkgInfo
+          echo "APPL????" > "artifacts/HyPrism-arm64.app/Contents/PkgInfo"
 
       - name: Create DMG files
         run: |
