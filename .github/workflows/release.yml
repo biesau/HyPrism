@@ -217,11 +217,6 @@ jobs:
           cp packaging/macos/HyPrism.icns "artifacts/HyPrism-arm64.app/Contents/Resources/"
           chmod +x "artifacts/HyPrism-arm64.app/Contents/MacOS/HyPrism"
 
-      - name: Sign macOS apps (ad-hoc)
-        run: |
-          codesign --force --deep --sign - "artifacts/HyPrism-x64.app"
-          codesign --force --deep --sign - "artifacts/HyPrism-arm64.app"
-
       - name: Create DMG files
         run: |
           # Create x64 DMG
