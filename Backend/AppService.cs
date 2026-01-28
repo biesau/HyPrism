@@ -41,6 +41,7 @@ public class AppService : IDisposable
 
     static AppService()
     {
+        LoadEnvFile();
         HttpClient.DefaultRequestHeaders.Add("User-Agent", "HyPrism/1.0");
         HttpClient.DefaultRequestHeaders.Add("Accept", "application/json");
     }
@@ -596,12 +597,17 @@ public class AppService : IDisposable
         {
             var newInstanceRoot = GetInstanceRoot();
             
-            // CRITICAL: Prevent migration if source IS the destination (would cause infinite loop)
+            // Check if source is the same as destination (case-insensitive for macOS)
             var normalizedSource = Path.GetFullPath(legacyInstanceRoot).TrimEnd(Path.DirectorySeparatorChar);
             var normalizedDest = Path.GetFullPath(newInstanceRoot).TrimEnd(Path.DirectorySeparatorChar);
-            if (normalizedSource.Equals(normalizedDest, StringComparison.OrdinalIgnoreCase))
+            var isSameDirectory = normalizedSource.Equals(normalizedDest, StringComparison.OrdinalIgnoreCase);
+            
+            // If same directory, we'll restructure in-place (rename release-v5 to release/5)
+            // If different directories, we'll copy as before
+            if (isSameDirectory)
             {
-                Logger.Info("Migrate", "Skipping migration - source equals destination");
+                Logger.Info("Migrate", "Source equals destination - will restructure legacy folders in-place");
+                RestructureLegacyFoldersInPlace(legacyInstanceRoot);
                 return;
             }
             
@@ -741,6 +747,120 @@ public class AppService : IDisposable
         catch (Exception ex)
         {
             Logger.Error("Migrate", $"Failed to migrate legacy instances: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Restructure legacy folder format (release-v5) to new format (release/5) in-place.
+    /// This is used when the instances folder is already in the correct location but has old naming.
+    /// </summary>
+    private void RestructureLegacyFoldersInPlace(string instanceRoot)
+    {
+        try
+        {
+            foreach (var legacyDir in Directory.GetDirectories(instanceRoot))
+            {
+                var folderName = Path.GetFileName(legacyDir);
+                if (string.IsNullOrEmpty(folderName)) continue;
+                
+                // Skip folders that are already branch names (new structure)
+                var normalizedFolderName = folderName.ToLowerInvariant();
+                if (normalizedFolderName == "release" || normalizedFolderName == "pre-release" || 
+                    normalizedFolderName == "prerelease" || normalizedFolderName == "latest")
+                {
+                    // This is already new structure, skip
+                    continue;
+                }
+                
+                // Only process legacy dash format: release-v5 or release-5
+                if (!folderName.Contains("-"))
+                {
+                    continue;
+                }
+                
+                var parts = folderName.Split('-', 2);
+                var branch = parts[0];
+                var versionSegment = parts.Length > 1 ? parts[1] : "latest";
+                
+                // Strip 'v' prefix if present
+                if (versionSegment.StartsWith("v", StringComparison.OrdinalIgnoreCase))
+                {
+                    versionSegment = versionSegment.Substring(1);
+                }
+                
+                // Normalize branch name
+                branch = NormalizeVersionType(branch);
+                
+                // Create target path in new structure: instances/release/5
+                var targetBranch = Path.Combine(instanceRoot, branch);
+                var targetVersion = Path.Combine(targetBranch, versionSegment);
+                
+                // Skip if target already exists
+                if (Directory.Exists(targetVersion))
+                {
+                    Logger.Info("Migrate", $"Skipping {folderName} - target {branch}/{versionSegment} already exists");
+                    continue;
+                }
+                
+                Logger.Info("Migrate", $"Restructuring {folderName} -> {branch}/{versionSegment}");
+                
+                // Create the branch directory
+                Directory.CreateDirectory(targetBranch);
+                
+                // Check if legacy has game/ subfolder - if so, move contents up
+                var legacyGameDir = Path.Combine(legacyDir, "game");
+                
+                if (Directory.Exists(legacyGameDir))
+                {
+                    // Legacy structure: release-v5/game/Client -> release/5/Client
+                    // Move the contents of game/ to the new version folder
+                    Directory.CreateDirectory(targetVersion);
+                    
+                    foreach (var item in Directory.GetFileSystemEntries(legacyGameDir))
+                    {
+                        var name = Path.GetFileName(item);
+                        var dest = Path.Combine(targetVersion, name);
+                        
+                        if (Directory.Exists(item))
+                        {
+                            Directory.Move(item, dest);
+                        }
+                        else if (File.Exists(item))
+                        {
+                            File.Move(item, dest);
+                        }
+                    }
+                    
+                    // Clean up old structure
+                    try
+                    {
+                        Directory.Delete(legacyDir, recursive: true);
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Warning("Migrate", $"Could not delete old folder {legacyDir}: {ex.Message}");
+                    }
+                    
+                    Logger.Success("Migrate", $"Restructured {folderName} (from game/ subfolder)");
+                }
+                else
+                {
+                    // Direct structure - just rename the folder
+                    try
+                    {
+                        Directory.Move(legacyDir, targetVersion);
+                        Logger.Success("Migrate", $"Restructured {folderName} (direct rename)");
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Error("Migrate", $"Failed to rename {folderName}: {ex.Message}");
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("Migrate", $"Failed to restructure legacy folders: {ex.Message}");
         }
     }
 
@@ -919,11 +1039,18 @@ public class AppService : IDisposable
         return true;
     }
 
-    public async Task<string?> SetInstanceDirectoryAsync(string path)
+    public Task<string?> SetInstanceDirectoryAsync(string path)
     {
         try
         {
-            if (string.IsNullOrWhiteSpace(path)) return null;
+            // If path is empty or whitespace, clear the custom instance directory
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                _config.InstanceDirectory = null!;
+                SaveConfig();
+                Logger.Success("Config", "Instance directory cleared, using default");
+                return Task.FromResult<string?>(null);
+            }
 
             var expanded = Environment.ExpandEnvironmentVariables(path.Trim());
 
@@ -938,16 +1065,86 @@ public class AppService : IDisposable
             SaveConfig();
 
             Logger.Success("Config", $"Instance directory set to {expanded}");
-            return expanded;
+            return Task.FromResult<string?>(expanded);
         }
         catch (Exception ex)
         {
             Logger.Error("Config", $"Failed to set instance directory: {ex.Message}");
-            return null;
+            return Task.FromResult<string?>(null);
         }
     }
 
     public string GetLauncherVersion() => "2.0.1";
+
+    /// <summary>
+    /// Check if Rosetta 2 is installed on macOS Apple Silicon.
+    /// Returns null if not on macOS or if Rosetta is installed.
+    /// Returns a warning object if Rosetta is needed but not installed.
+    /// </summary>
+    public RosettaStatus? CheckRosettaStatus()
+    {
+        // Only relevant on macOS
+        if (!RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+        {
+            return null;
+        }
+
+        // Only relevant on Apple Silicon (ARM64)
+        if (RuntimeInformation.ProcessArchitecture != Architecture.Arm64)
+        {
+            return null;
+        }
+
+        try
+        {
+            // Check if Rosetta is installed by checking for the runtime at /Library/Apple/usr/share/rosetta
+            var rosettaPath = "/Library/Apple/usr/share/rosetta";
+            if (Directory.Exists(rosettaPath))
+            {
+                Logger.Info("Rosetta", "Rosetta 2 is installed");
+                return null; // Rosetta is installed, no warning needed
+            }
+
+            // Also try running arch -x86_64 to verify
+            try
+            {
+                var psi = new ProcessStartInfo
+                {
+                    FileName = "/usr/bin/arch",
+                    Arguments = "-x86_64 /usr/bin/true",
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true
+                };
+                using var process = Process.Start(psi);
+                process?.WaitForExit(5000);
+                if (process?.ExitCode == 0)
+                {
+                    Logger.Info("Rosetta", "Rosetta 2 is installed (verified via arch command)");
+                    return null;
+                }
+            }
+            catch
+            {
+                // Ignore, proceed with warning
+            }
+
+            Logger.Warning("Rosetta", "Rosetta 2 is NOT installed - Hytale requires it to run on Apple Silicon");
+            return new RosettaStatus
+            {
+                NeedsInstall = true,
+                Message = "Rosetta 2 is required to run Hytale on Apple Silicon Macs.",
+                Command = "softwareupdate --install-rosetta --agree-to-license",
+                TutorialUrl = "https://www.youtube.com/watch?v=1W2vuSfnpXw"
+            };
+        }
+        catch (Exception ex)
+        {
+            Logger.Warning("Rosetta", $"Failed to check Rosetta status: {ex.Message}");
+            return null;
+        }
+    }
 
     // Version Management
     public string GetVersionType() => _config.VersionType;
@@ -960,6 +1157,7 @@ public class AppService : IDisposable
     }
 
     // Returns list of available version numbers by checking Hytale's patch server
+    // Uses caching to start from the last known version instead of version 1
     public async Task<List<int>> GetVersionListAsync(string branch)
     {
         var normalizedBranch = NormalizeVersionType(branch);
@@ -969,31 +1167,114 @@ public class AppService : IDisposable
         string arch = GetArch();
         string apiVersionType = normalizedBranch;
 
-        // Start version depends on branch type
-        int startVersion = apiVersionType == "pre-release" ? 10 : 5;
-
-        // Check versions in parallel
-        var tasks = new List<Task<(int version, bool exists)>>();
+        // Load version cache
+        var cache = LoadVersionCache();
+        int startVersion = 1;
         
-        for (int v = 1; v <= startVersion; v++)
+        // If we have cached versions for this branch, start from the highest known version
+        if (cache.KnownVersions.TryGetValue(normalizedBranch, out var knownVersions) && knownVersions.Count > 0)
         {
-            int version = v;
-            tasks.Add(CheckVersionExistsAsync(osName, arch, apiVersionType, version));
+            startVersion = knownVersions.Max();
+            // Add all known versions to result first
+            result.AddRange(knownVersions);
         }
 
-        var results = await Task.WhenAll(tasks);
-        
-        foreach (var (version, exists) in results)
+        // Check for new versions starting from the highest known version
+        int currentVersion = startVersion;
+        int consecutiveFailures = 0;
+        const int maxConsecutiveFailures = 3; // Stop after 3 consecutive non-existent versions
+
+        while (consecutiveFailures < maxConsecutiveFailures)
         {
+            var (version, exists) = await CheckVersionExistsAsync(osName, arch, apiVersionType, currentVersion);
+            
             if (exists)
             {
-                result.Add(version);
+                if (!result.Contains(version))
+                {
+                    result.Add(version);
+                }
+                consecutiveFailures = 0;
+            }
+            else
+            {
+                consecutiveFailures++;
+            }
+            
+            currentVersion++;
+        }
+
+        // Also verify that all cached versions still exist (in parallel)
+        if (knownVersions != null && knownVersions.Count > 0)
+        {
+            var verifyTasks = knownVersions
+                .Where(v => v < startVersion)
+                .Select(v => CheckVersionExistsAsync(osName, arch, apiVersionType, v))
+                .ToList();
+            
+            if (verifyTasks.Count > 0)
+            {
+                var verifyResults = await Task.WhenAll(verifyTasks);
+                foreach (var (version, exists) in verifyResults)
+                {
+                    if (exists && !result.Contains(version))
+                    {
+                        result.Add(version);
+                    }
+                }
             }
         }
 
         result.Sort((a, b) => b.CompareTo(a)); // Sort descending (latest first)
+        
+        // Save updated cache
+        cache.KnownVersions[normalizedBranch] = result;
+        cache.LastUpdated = DateTime.UtcNow;
+        SaveVersionCache(cache);
+        
         Logger.Info("Version", $"Found {result.Count} versions for {branch}: [{string.Join(", ", result)}]");
         return result;
+    }
+
+    private string GetVersionCachePath()
+    {
+        return Path.Combine(_appDir, "version_cache.json");
+    }
+
+    private VersionCache LoadVersionCache()
+    {
+        try
+        {
+            var path = GetVersionCachePath();
+            if (File.Exists(path))
+            {
+                var json = File.ReadAllText(path);
+                var cache = JsonSerializer.Deserialize<VersionCache>(json);
+                if (cache != null)
+                {
+                    return cache;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Warning("Version", $"Failed to load version cache: {ex.Message}");
+        }
+        return new VersionCache();
+    }
+
+    private void SaveVersionCache(VersionCache cache)
+    {
+        try
+        {
+            var path = GetVersionCachePath();
+            var json = JsonSerializer.Serialize(cache, new JsonSerializerOptions { WriteIndented = true });
+            File.WriteAllText(path, json);
+        }
+        catch (Exception ex)
+        {
+            Logger.Warning("Version", $"Failed to save version cache: {ex.Message}");
+        }
     }
 
     private async Task<(int version, bool exists)> CheckVersionExistsAsync(string os, string arch, string versionType, int version)
@@ -2473,26 +2754,63 @@ public class AppService : IDisposable
 
         try
         {
-            var apiUrl = "https://api.github.com/repos/yyyumeniku/HyPrism/releases/latest";
+            var launcherBranch = GetLauncherBranch();
+            var isBetaChannel = launcherBranch == "beta";
+            
+            // Get all releases (not just latest) to support beta channel
+            var apiUrl = "https://api.github.com/repos/yyyumeniku/HyPrism/releases?per_page=50";
             var json = await HttpClient.GetStringAsync(apiUrl);
             using var doc = JsonDocument.Parse(json);
 
-            var tagName = doc.RootElement.GetProperty("tag_name").GetString();
-            if (string.IsNullOrWhiteSpace(tagName)) return;
-
-            // Parse version from tag (e.g., "v2.0.1" -> "2.0.1")
-            var remoteVersion = tagName.TrimStart('v', 'V');
             var currentVersion = GetLauncherVersion();
+            string? bestVersion = null;
+            JsonElement? bestRelease = null;
 
-            // Simple string comparison for semantic versions
-            if (IsNewerVersion(remoteVersion, currentVersion))
+            foreach (var release in doc.RootElement.EnumerateArray())
             {
-                Logger.Info("Update", $"Update available: {currentVersion} -> {remoteVersion}");
+                var tagName = release.GetProperty("tag_name").GetString();
+                if (string.IsNullOrWhiteSpace(tagName)) continue;
+                
+                var isPrerelease = release.TryGetProperty("prerelease", out var prereleaseVal) && prereleaseVal.GetBoolean();
+                var tagLower = tagName.ToLowerInvariant();
+                
+                // Determine if this is a beta release
+                // Beta releases: prerelease=true OR tag starts with "beta"
+                var isBetaRelease = isPrerelease || tagLower.StartsWith("beta");
+                
+                // Skip releases that don't match our channel preference
+                if (!isBetaChannel && isBetaRelease)
+                {
+                    // User wants stable, skip beta releases
+                    continue;
+                }
+                
+                // Parse version from tag
+                // Formats: "v2.0.1", "2.0.1", "beta3-3.0.0", "beta-3.0.0"
+                var version = ParseVersionFromTag(tagName);
+                if (string.IsNullOrWhiteSpace(version)) continue;
+                
+                // Compare with current version
+                if (IsNewerVersion(version, currentVersion))
+                {
+                    // Check if this is better than our current best
+                    if (bestVersion == null || IsNewerVersion(version, bestVersion))
+                    {
+                        bestVersion = version;
+                        bestRelease = release;
+                    }
+                }
+            }
+
+            if (bestRelease.HasValue && !string.IsNullOrWhiteSpace(bestVersion))
+            {
+                var release = bestRelease.Value;
+                Logger.Info("Update", $"Update available: {currentVersion} -> {bestVersion} (channel: {launcherBranch})");
                 
                 // Pick the right asset for this platform
                 string? downloadUrl = null;
                 string? assetName = null;
-                var assets = doc.RootElement.GetProperty("assets");
+                var assets = release.GetProperty("assets");
                 var arch = RuntimeInformation.ProcessArchitecture;
 
                 string? targetAsset = null;
@@ -2523,24 +2841,53 @@ public class AppService : IDisposable
                     eventName = "update:available",
                     data = new
                     {
-                        version = remoteVersion,
+                        version = bestVersion,
                         currentVersion = currentVersion,
                         downloadUrl = downloadUrl ?? "",
                         assetName = assetName ?? "",
-                        releaseUrl = doc.RootElement.GetProperty("html_url").GetString() ?? ""
+                        releaseUrl = release.GetProperty("html_url").GetString() ?? "",
+                        isBeta = launcherBranch == "beta"
                     }
                 };
                 _mainWindow.SendWebMessage(JsonSerializer.Serialize(eventData, JsonOptions));
             }
             else
             {
-                Logger.Info("Update", $"Launcher is up to date: {currentVersion}");
+                Logger.Info("Update", $"Launcher is up to date: {currentVersion} (channel: {launcherBranch})");
             }
         }
         catch (Exception ex)
         {
             Logger.Warning("Update", $"Failed to check for updates: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// Parse version string from various tag formats.
+    /// Supports: "v2.0.1", "2.0.1", "beta3-3.0.0", "beta-3.0.0", "beta3-v3.0.0"
+    /// </summary>
+    private static string? ParseVersionFromTag(string tag)
+    {
+        if (string.IsNullOrWhiteSpace(tag)) return null;
+        
+        var tagLower = tag.ToLowerInvariant();
+        
+        // Handle beta format: "beta3-3.0.0" or "beta-3.0.0"
+        if (tagLower.StartsWith("beta"))
+        {
+            var dashIndex = tag.IndexOf('-');
+            if (dashIndex >= 0 && dashIndex < tag.Length - 1)
+            {
+                var versionPart = tag.Substring(dashIndex + 1).TrimStart('v', 'V');
+                return versionPart;
+            }
+            // beta without dash, try to extract version after "beta" text
+            var afterBeta = tag.Substring(4).TrimStart('0', '1', '2', '3', '4', '5', '6', '7', '8', '9').TrimStart('-', '_').TrimStart('v', 'V');
+            return string.IsNullOrWhiteSpace(afterBeta) ? null : afterBeta;
+        }
+        
+        // Handle standard format: "v2.0.1" or "2.0.1"
+        return tag.TrimStart('v', 'V');
     }
 
     private static bool IsNewerVersion(string remote, string current)
@@ -2894,6 +3241,60 @@ del ""%~f0""
         return true;
     }
 
+    // Launcher Branch (release/beta update channel)
+    public string GetLauncherBranch() => string.IsNullOrWhiteSpace(_config.LauncherBranch) ? "release" : _config.LauncherBranch;
+    
+    public bool SetLauncherBranch(string branch)
+    {
+        var normalizedBranch = branch?.ToLowerInvariant() ?? "release";
+        if (normalizedBranch != "release" && normalizedBranch != "beta")
+        {
+            normalizedBranch = "release";
+        }
+        _config.LauncherBranch = normalizedBranch;
+        SaveConfig();
+        Logger.Info("Config", $"Launcher branch set to: {normalizedBranch}");
+        return true;
+    }
+
+    // Close After Launch setting
+    public bool GetCloseAfterLaunch() => _config.CloseAfterLaunch;
+    
+    public bool SetCloseAfterLaunch(bool enabled)
+    {
+        _config.CloseAfterLaunch = enabled;
+        SaveConfig();
+        Logger.Info("Config", $"Close after launch set to: {enabled}");
+        return true;
+    }
+
+    // Discord Announcements settings
+    public bool GetShowDiscordAnnouncements() => _config.ShowDiscordAnnouncements;
+    
+    public bool SetShowDiscordAnnouncements(bool enabled)
+    {
+        _config.ShowDiscordAnnouncements = enabled;
+        SaveConfig();
+        Logger.Info("Config", $"Show Discord announcements set to: {enabled}");
+        return true;
+    }
+
+    public bool IsAnnouncementDismissed(string announcementId)
+    {
+        return _config.DismissedAnnouncementIds.Contains(announcementId);
+    }
+
+    public bool DismissAnnouncement(string announcementId)
+    {
+        if (!_config.DismissedAnnouncementIds.Contains(announcementId))
+        {
+            _config.DismissedAnnouncementIds.Add(announcementId);
+            SaveConfig();
+            Logger.Info("Discord", $"Announcement {announcementId} dismissed");
+        }
+        return true;
+    }
+
     // Online Mode removed: launcher always runs offline
 
     // CurseForge API constants
@@ -3093,6 +3494,11 @@ del ""%~f0""
     public Task<bool> InstallModFileToInstance(string modId, string fileId, string branch, int version)
     {
         return InstallModFileToInstanceAsync(modId, fileId, branch, version);
+    }
+
+    public Task<string?> BrowseFolder(string? initialPath = null)
+    {
+        return BrowseFolderAsync(initialPath);
     }
 
     public async Task<List<ModCategory>> GetModCategoriesAsync()
@@ -3399,9 +3805,511 @@ del ""%~f0""
     {
         return CheckInstanceModUpdatesAsync(branch, version);
     }
+
+    // Discord Announcements - loaded from .env file
+    private static string DiscordAnnouncementChannelId = "";
+    private static string DiscordBotToken = "";
+
+    private static void LoadEnvFile()
+    {
+        // Try to find .env in current directory or parent directories
+        var currentDir = Directory.GetCurrentDirectory();
+        var envPath = Path.Combine(currentDir, ".env");
+        
+        // Also check the executable directory
+        var exeDir = AppContext.BaseDirectory;
+        var exeEnvPath = Path.Combine(exeDir, ".env");
+        
+        var pathToUse = File.Exists(envPath) ? envPath : (File.Exists(exeEnvPath) ? exeEnvPath : null);
+        
+        if (pathToUse == null)
+        {
+            Logger.Info("Discord", ".env file not found - Discord announcements will be disabled");
+            return;
+        }
+        
+        try
+        {
+            var lines = File.ReadAllLines(pathToUse);
+            foreach (var line in lines)
+            {
+                if (string.IsNullOrWhiteSpace(line) || line.TrimStart().StartsWith("#"))
+                    continue;
+                    
+                var eqIndex = line.IndexOf('=');
+                if (eqIndex <= 0) continue;
+                
+                var key = line.Substring(0, eqIndex).Trim();
+                var value = line.Substring(eqIndex + 1).Trim();
+                
+                // Remove quotes if present
+                if (value.StartsWith("\"") && value.EndsWith("\""))
+                    value = value.Substring(1, value.Length - 2);
+                else if (value.StartsWith("'") && value.EndsWith("'"))
+                    value = value.Substring(1, value.Length - 2);
+                
+                switch (key)
+                {
+                    case "DISCORD_BOT_TOKEN":
+                        DiscordBotToken = value;
+                        Logger.Info("Discord", "Loaded bot token from .env");
+                        break;
+                    case "DISCORD_CHANNEL_ID":
+                        DiscordAnnouncementChannelId = value;
+                        Logger.Info("Discord", $"Loaded channel ID from .env: {value}");
+                        break;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Warning("Discord", $"Failed to load .env file: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Fetches the latest announcement from a Discord channel.
+    /// Returns null if no announcement found, if Discord API is not configured,
+    /// if announcements are disabled, or if the message has been dismissed.
+    /// </summary>
+    public async Task<DiscordAnnouncement?> GetDiscordAnnouncementAsync()
+    {
+        // Check if announcements are enabled
+        if (!_config.ShowDiscordAnnouncements)
+        {
+            Logger.Info("Discord", "Discord announcements disabled in settings");
+            return null;
+        }
+
+        if (string.IsNullOrEmpty(DiscordBotToken) || string.IsNullOrEmpty(DiscordAnnouncementChannelId))
+        {
+            Logger.Info("Discord", "Discord announcements not configured - skipping");
+            return null;
+        }
+
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, 
+                $"https://discord.com/api/v10/channels/{DiscordAnnouncementChannelId}/messages?limit=1");
+            request.Headers.Add("Authorization", $"Bot {DiscordBotToken}");
+            request.Headers.Add("User-Agent", "HyPrism/2.0.1");
+
+            using var response = await HttpClient.SendAsync(request);
+            if (!response.IsSuccessStatusCode)
+            {
+                Logger.Warning("Discord", $"Failed to fetch announcements: {response.StatusCode}");
+                return null;
+            }
+
+            var content = await response.Content.ReadAsStringAsync();
+            var messages = JsonSerializer.Deserialize<List<DiscordMessage>>(content);
+
+            if (messages == null || messages.Count == 0)
+            {
+                return null;
+            }
+
+            var msg = messages[0];
+            
+            // Check if this announcement has been dismissed
+            if (msg.Id != null && _config.DismissedAnnouncementIds.Contains(msg.Id))
+            {
+                Logger.Info("Discord", $"Announcement {msg.Id} already dismissed - skipping");
+                return null;
+            }
+
+            // Check if the message has a ❌ reaction from us (means it should be hidden)
+            // This is checked via the message reactions
+            if (msg.Reactions != null)
+            {
+                foreach (var reaction in msg.Reactions)
+                {
+                    if (reaction.Emoji?.Name == "❌" && reaction.Me == true)
+                    {
+                        Logger.Info("Discord", $"Announcement {msg.Id} has ❌ reaction - skipping");
+                        return null;
+                    }
+                }
+            }
+            
+            // Extract image if present (from attachments or embeds)
+            string? imageUrl = null;
+            if (msg.Attachments?.Count > 0)
+            {
+                var imgAttachment = msg.Attachments.FirstOrDefault(a => 
+                    a.ContentType?.StartsWith("image/") == true);
+                imageUrl = imgAttachment?.Url;
+            }
+            
+            // Get author's highest role color if available
+            string? roleColor = null;
+            string? roleName = null;
+            if (msg.Member?.Roles?.Count > 0)
+            {
+                // We'd need to fetch roles from guild, for now just use first role ID
+                // In practice, you might want to cache guild roles
+            }
+
+            return new DiscordAnnouncement
+            {
+                Id = msg.Id ?? "",
+                Content = msg.Content ?? "",
+                AuthorName = msg.Author?.GlobalName ?? msg.Author?.Username ?? "Unknown",
+                AuthorAvatar = msg.Author?.Id != null && msg.Author?.Avatar != null
+                    ? $"https://cdn.discordapp.com/avatars/{msg.Author.Id}/{msg.Author.Avatar}.png?size=64"
+                    : null,
+                AuthorRole = roleName,
+                RoleColor = roleColor,
+                ImageUrl = imageUrl,
+                Timestamp = msg.Timestamp ?? DateTime.UtcNow.ToString("o")
+            };
+        }
+        catch (Exception ex)
+        {
+            Logger.Warning("Discord", $"Error fetching announcement: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// React to a Discord message with the specified emoji.
+    /// Used to mark announcements as shown (✅) or hidden (❌) in Discord.
+    /// </summary>
+    public async Task<bool> ReactToAnnouncementAsync(string messageId, string emoji)
+    {
+        if (string.IsNullOrEmpty(DiscordBotToken) || string.IsNullOrEmpty(DiscordAnnouncementChannelId))
+        {
+            return false;
+        }
+
+        try
+        {
+            // URL encode the emoji for the API
+            var encodedEmoji = Uri.EscapeDataString(emoji);
+            var url = $"https://discord.com/api/v10/channels/{DiscordAnnouncementChannelId}/messages/{messageId}/reactions/{encodedEmoji}/@me";
+            
+            using var request = new HttpRequestMessage(HttpMethod.Put, url);
+            request.Headers.Add("Authorization", $"Bot {DiscordBotToken}");
+            request.Headers.Add("User-Agent", "HyPrism/2.0.1");
+
+            using var response = await HttpClient.SendAsync(request);
+            if (response.IsSuccessStatusCode)
+            {
+                Logger.Info("Discord", $"Added {emoji} reaction to message {messageId}");
+                return true;
+            }
+            else
+            {
+                Logger.Warning("Discord", $"Failed to add reaction: {response.StatusCode}");
+                return false;
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Warning("Discord", $"Error adding reaction: {ex.Message}");
+            return false;
+        }
+    }
+
+    public Task<DiscordAnnouncement?> GetDiscordAnnouncement()
+    {
+        return GetDiscordAnnouncementAsync();
+    }
+
+    /// <summary>
+    /// Opens the HyPrism launcher data folder in the system file manager.
+    /// </summary>
+    public bool OpenLauncherFolder()
+    {
+        try
+        {
+            Logger.Info("Folder", $"Opening launcher folder: {_appDir}");
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            {
+                Process.Start("explorer.exe", $"\"{_appDir}\"");
+            }
+            else if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+            {
+                Process.Start(new ProcessStartInfo("open", $"\"{_appDir}\"") { UseShellExecute = false });
+            }
+            else
+            {
+                Process.Start("xdg-open", $"\"{_appDir}\"");
+            }
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Logger.Warning("Folder", $"Failed to open launcher folder: {ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Deletes all HyPrism launcher data including config, cache, and instances.
+    /// Returns true if successful, false otherwise.
+    /// </summary>
+    public bool DeleteLauncherData()
+    {
+        try
+        {
+            Logger.Warning("Folder", $"Deleting all launcher data at: {_appDir}");
+            
+            // Don't delete if app is running from within the folder
+            if (_appDir.Contains(AppContext.BaseDirectory))
+            {
+                Logger.Warning("Folder", "Cannot delete launcher data - app is running from within the folder");
+                return false;
+            }
+            
+            if (Directory.Exists(_appDir))
+            {
+                Directory.Delete(_appDir, true);
+                Logger.Info("Folder", "Launcher data deleted successfully");
+                return true;
+            }
+            
+            return false;
+        }
+        catch (Exception ex)
+        {
+            Logger.Warning("Folder", $"Failed to delete launcher data: {ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Gets the current launcher folder path.
+    /// </summary>
+    public string GetLauncherFolderPath()
+    {
+        return _appDir;
+    }
+
+    /// <summary>
+    /// Browse for a folder using native OS dialog.
+    /// Returns the selected folder path or null if cancelled.
+    /// </summary>
+    public async Task<string?> BrowseFolderAsync(string? initialPath = null)
+    {
+        try
+        {
+            var startPath = initialPath ?? _appDir;
+            
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+            {
+                // Use osascript to show folder picker on macOS
+                var script = $@"tell application ""System Events""
+                    activate
+                    set theFolder to choose folder with prompt ""Select Folder"" default location POSIX file ""{startPath}""
+                    return POSIX path of theFolder
+                end tell";
+                
+                var psi = new ProcessStartInfo
+                {
+                    FileName = "osascript",
+                    Arguments = $"-e '{script.Replace("'", "'\\''")}'",
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+                
+                using var process = Process.Start(psi);
+                if (process == null) return null;
+                
+                var output = await process.StandardOutput.ReadToEndAsync();
+                await process.WaitForExitAsync();
+                
+                if (process.ExitCode == 0 && !string.IsNullOrWhiteSpace(output))
+                {
+                    return output.Trim();
+                }
+            }
+            else if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            {
+                // Use PowerShell to show folder picker on Windows
+                var script = $@"Add-Type -AssemblyName System.Windows.Forms; $dialog = New-Object System.Windows.Forms.FolderBrowserDialog; $dialog.SelectedPath = '{startPath.Replace("'", "''")}'; if ($dialog.ShowDialog() -eq 'OK') {{ $dialog.SelectedPath }}";
+                
+                var psi = new ProcessStartInfo
+                {
+                    FileName = "powershell",
+                    Arguments = $"-NoProfile -Command \"{script}\"",
+                    RedirectStandardOutput = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+                
+                using var process = Process.Start(psi);
+                if (process == null) return null;
+                
+                var output = await process.StandardOutput.ReadToEndAsync();
+                await process.WaitForExitAsync();
+                
+                if (!string.IsNullOrWhiteSpace(output))
+                {
+                    return output.Trim();
+                }
+            }
+            else
+            {
+                // Linux - use zenity if available
+                var psi = new ProcessStartInfo
+                {
+                    FileName = "zenity",
+                    Arguments = $"--file-selection --directory --title=\"Select Folder\"",
+                    RedirectStandardOutput = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+                
+                using var process = Process.Start(psi);
+                if (process == null) return null;
+                
+                var output = await process.StandardOutput.ReadToEndAsync();
+                await process.WaitForExitAsync();
+                
+                if (process.ExitCode == 0 && !string.IsNullOrWhiteSpace(output))
+                {
+                    return output.Trim();
+                }
+            }
+            
+            return null;
+        }
+        catch (Exception ex)
+        {
+            Logger.Warning("Folder", $"Failed to browse folder: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Triggers a test Discord announcement popup for developer testing.
+    /// </summary>
+    public DiscordAnnouncement? GetTestAnnouncement()
+    {
+        return new DiscordAnnouncement
+        {
+            Id = "test-announcement-" + DateTime.UtcNow.Ticks,
+            AuthorName = "HyPrism Bot",
+            AuthorAvatar = null,
+            AuthorRole = "Developer",
+            RoleColor = "#FFA845",
+            Content = "🎉 This is a test announcement!\n\nThis is used to preview how Discord announcements will appear in the launcher. You can dismiss this by clicking the X button or disabling announcements.\n\n✨ Features:\n• Author info with avatar\n• Role colors\n• Images and attachments\n• Smooth animations",
+            ImageUrl = null,
+            Timestamp = DateTime.UtcNow.ToString("o")
+        };
+    }
 }
 
 // Models
+
+// Discord API models
+public class DiscordMessage
+{
+    [JsonPropertyName("id")]
+    public string? Id { get; set; }
+    
+    [JsonPropertyName("content")]
+    public string? Content { get; set; }
+    
+    [JsonPropertyName("author")]
+    public DiscordAuthor? Author { get; set; }
+    
+    [JsonPropertyName("member")]
+    public DiscordMember? Member { get; set; }
+    
+    [JsonPropertyName("attachments")]
+    public List<DiscordAttachment>? Attachments { get; set; }
+    
+    [JsonPropertyName("timestamp")]
+    public string? Timestamp { get; set; }
+    
+    [JsonPropertyName("reactions")]
+    public List<DiscordReaction>? Reactions { get; set; }
+}
+
+public class DiscordReaction
+{
+    [JsonPropertyName("count")]
+    public int Count { get; set; }
+    
+    [JsonPropertyName("me")]
+    public bool Me { get; set; }
+    
+    [JsonPropertyName("emoji")]
+    public DiscordEmoji? Emoji { get; set; }
+}
+
+public class DiscordEmoji
+{
+    [JsonPropertyName("id")]
+    public string? Id { get; set; }
+    
+    [JsonPropertyName("name")]
+    public string? Name { get; set; }
+}
+
+public class DiscordAuthor
+{
+    [JsonPropertyName("id")]
+    public string? Id { get; set; }
+    
+    [JsonPropertyName("username")]
+    public string? Username { get; set; }
+    
+    [JsonPropertyName("global_name")]
+    public string? GlobalName { get; set; }
+    
+    [JsonPropertyName("avatar")]
+    public string? Avatar { get; set; }
+}
+
+public class DiscordMember
+{
+    [JsonPropertyName("roles")]
+    public List<string>? Roles { get; set; }
+    
+    [JsonPropertyName("nick")]
+    public string? Nick { get; set; }
+}
+
+public class DiscordAttachment
+{
+    [JsonPropertyName("url")]
+    public string? Url { get; set; }
+    
+    [JsonPropertyName("content_type")]
+    public string? ContentType { get; set; }
+}
+
+/// <summary>
+/// Announcement data fetched from Discord channel.
+/// </summary>
+public class DiscordAnnouncement
+{
+    public string Id { get; set; } = "";
+    public string Content { get; set; } = "";
+    public string AuthorName { get; set; } = "";
+    public string? AuthorAvatar { get; set; }
+    public string? AuthorRole { get; set; }
+    public string? RoleColor { get; set; }
+    public string? ImageUrl { get; set; }
+    public string Timestamp { get; set; } = "";
+}
+
+/// <summary>
+/// Status of Rosetta 2 installation on macOS Apple Silicon.
+/// </summary>
+public class RosettaStatus
+{
+    public bool NeedsInstall { get; set; }
+    public string Message { get; set; } = "";
+    public string Command { get; set; } = "";
+    public string? TutorialUrl { get; set; }
+}
+
 public class Config
 {
     public string Version { get; set; } = "2.0.0";
@@ -3411,6 +4319,32 @@ public class Config
     public int SelectedVersion { get; set; } = 0;
     public string InstanceDirectory { get; set; } = "";
     public bool MusicEnabled { get; set; } = true;
+    /// <summary>
+    /// Launcher update channel: "release" for stable updates, "beta" for beta updates.
+    /// Beta releases are named like "beta3-3.0.0" on GitHub.
+    /// </summary>
+    public string LauncherBranch { get; set; } = "release";
+    /// <summary>
+    /// If true, the launcher will close after successfully launching the game.
+    /// </summary>
+    public bool CloseAfterLaunch { get; set; } = false;
+    /// <summary>
+    /// If true, Discord announcements will be shown in the launcher.
+    /// </summary>
+    public bool ShowDiscordAnnouncements { get; set; } = true;
+    /// <summary>
+    /// List of Discord announcement IDs that have been dismissed by the user.
+    /// </summary>
+    public List<string> DismissedAnnouncementIds { get; set; } = new();
+}
+
+/// <summary>
+/// Cache for version information to avoid checking from version 1 every time.
+/// </summary>
+public class VersionCache
+{
+    public Dictionary<string, List<int>> KnownVersions { get; set; } = new();
+    public DateTime LastUpdated { get; set; } = DateTime.MinValue;
 }
 
 // News models matching Hytale API

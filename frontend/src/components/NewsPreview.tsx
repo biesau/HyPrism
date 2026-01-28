@@ -22,7 +22,8 @@ type NewsFilter = 'all' | 'hytale' | 'hyprism';
 export const NewsPreview: React.FC<NewsPreviewProps> = ({ getNews }) => {
     const { t } = useTranslation();
     const [news, setNews] = useState<NewsItem[]>([]);
-    const [loading, setLoading] = useState(true);
+    const [initialLoading, setInitialLoading] = useState(true);
+    const [isRefreshing, setIsRefreshing] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [limit, setLimit] = useState(6);
     const [filter, setFilter] = useState<NewsFilter>('all');
@@ -30,7 +31,12 @@ export const NewsPreview: React.FC<NewsPreviewProps> = ({ getNews }) => {
     const listRef = useRef<HTMLDivElement>(null);
 
     const fetchNews = async (count: number, reset = false) => {
-        setLoading(true);
+        // Only show initial loading spinner if we have no news yet
+        if (news.length === 0) {
+            setInitialLoading(true);
+        } else {
+            setIsRefreshing(true);
+        }
         setError(null);
         try {
             const items = await getNews(count);
@@ -42,9 +48,13 @@ export const NewsPreview: React.FC<NewsPreviewProps> = ({ getNews }) => {
                 return Array.from(seen.values());
             });
         } catch (err) {
-            setError(err instanceof Error ? err.message : 'Failed to fetch news');
+            // Only set error if we have no news to show
+            if (news.length === 0) {
+                setError(err instanceof Error ? err.message : 'Failed to fetch news');
+            }
         } finally {
-            setLoading(false);
+            setInitialLoading(false);
+            setIsRefreshing(false);
         }
     };
 
@@ -64,7 +74,8 @@ export const NewsPreview: React.FC<NewsPreviewProps> = ({ getNews }) => {
     };
 
     const handleScroll = () => {
-        if (!listRef.current || loading) return;
+        // Avoid pagination while loading
+        if (!listRef.current || initialLoading || isRefreshing) return;
         const { scrollTop, scrollHeight, clientHeight } = listRef.current;
         if (scrollHeight - scrollTop - clientHeight < 120) {
             setLimit((prev) => prev + 6);
@@ -129,7 +140,7 @@ export const NewsPreview: React.FC<NewsPreviewProps> = ({ getNews }) => {
             </div>
 
             {!isMinimized && (
-                loading ? (
+                initialLoading ? (
                     <div className="flex items-center justify-center py-4">
                         <RefreshCw size={24} className="text-[#FFA845] animate-spin" />
                     </div>
@@ -138,7 +149,7 @@ export const NewsPreview: React.FC<NewsPreviewProps> = ({ getNews }) => {
                         <div className="text-center">
                             <p className="text-red-400 mb-3 text-sm">{error}</p>
                             <button
-                                onClick={fetchNews}
+                                onClick={() => fetchNews(limit, true)}
                                 className="px-4 py-2 bg-white/10 hover:bg-white/20 rounded-lg transition-colors text-sm"
                             >
                                 {t('Try Again')}
@@ -146,12 +157,17 @@ export const NewsPreview: React.FC<NewsPreviewProps> = ({ getNews }) => {
                         </div>
                     </div>
                 ) : filteredNews.length > 0 ? (
-                    <div ref={listRef} onScroll={handleScroll} className='flex flex-col gap-2 max-h-72 overflow-y-auto pr-1'>
+                    <div ref={listRef} onScroll={handleScroll} className='flex flex-col gap-2 max-h-72 overflow-y-auto pr-1 relative'>
+                        {/* Subtle refresh indicator */}
+                        {isRefreshing && (
+                            <div className="absolute top-0 left-1/2 -translate-x-1/2 z-10">
+                                <RefreshCw size={12} className="text-[#FFA845]/50 animate-spin" />
+                            </div>
+                        )}
                         {filteredNews.map((item) => (
                             <button
                                 key={item.url + item.title}
                                 onClick={() => openLink(item.url)}
-                                disabled={loading}
                                 className='flex gap-2 group hover:bg-white/5 p-2 rounded-lg transition-all cursor-pointer text-left w-full glass'
                             >
                                 {item.imageUrl && (
@@ -173,7 +189,7 @@ export const NewsPreview: React.FC<NewsPreviewProps> = ({ getNews }) => {
                                 </div>
                             </button>
                         ))}
-                        {loading && (
+                        {isRefreshing && (
                             <div className='flex items-center justify-center py-2 text-xs text-white/50'>
                                 <RefreshCw size={12} className='animate-spin' />
                             </div>

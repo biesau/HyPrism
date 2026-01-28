@@ -14,11 +14,8 @@ const backgroundImages = Object.entries(allBackgrounds)
   })
   .map(([, url]) => url as string);
 
-// Fallback to old background if no bg_* images found
-import fallbackBackground from '../assets/background.jpg';
-if (backgroundImages.length === 0) {
-  backgroundImages.push(fallbackBackground);
-}
+// Use first bg image as fallback if array somehow ends up empty (shouldn't happen with glob)
+// No separate fallback file needed since we have bg_* images
 
 // Configuration
 const TRANSITION_DURATION = 2000; // 2 seconds crossfade

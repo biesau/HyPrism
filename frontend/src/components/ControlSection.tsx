@@ -1,10 +1,9 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { FolderOpen, Play, Package, Square, Github, Bug, GitBranch, Loader2, Download, ChevronDown, HardDrive, Check, Coffee, X } from 'lucide-react';
+import { FolderOpen, Play, Package, Square, Settings, Loader2, Download, ChevronDown, HardDrive, Check, X, GitBranch } from 'lucide-react';
+import { CoffeeIcon } from './CoffeeIcon';
 import { BrowserOpenURL } from '../../wailsjs/runtime/runtime';
 import { GameBranch } from '../constants/enums';
-
-import { LanguageSelector } from './LanguageSelector';
 
 interface ControlSectionProps {
   onPlay: () => void;
@@ -29,6 +28,7 @@ interface ControlSectionProps {
   onBranchChange: (branch: string) => void;
   onVersionChange: (version: number) => void;
   onCustomDirChange?: () => void;
+  onOpenSettings?: () => void;
   actions: {
     openFolder: () => void;
     showDelete: () => void;
@@ -74,6 +74,7 @@ export const ControlSection: React.FC<ControlSectionProps> = ({
   onBranchChange,
   onVersionChange,
   onCustomDirChange,
+  onOpenSettings,
   actions
 }) => {
   const [isBranchOpen, setIsBranchOpen] = useState(false);
@@ -85,8 +86,6 @@ export const ControlSection: React.FC<ControlSectionProps> = ({
 
   const { t } = useTranslation();
 
-  const openGitHub = () => BrowserOpenURL('https://github.com/yyyumeniku/HyPrism');
-  const openBugReport = () => BrowserOpenURL('https://github.com/yyyumeniku/HyPrism/issues/new');
   const openCoffee = () => BrowserOpenURL('https://buymeacoffee.com/yyyumeniku');
 
   // Close dropdowns on click outside
@@ -134,8 +133,9 @@ export const ControlSection: React.FC<ControlSectionProps> = ({
       ? t('Pre-Release')
       : t('Release');
 
-  // Calculate width to fit content properly
-  const selectorWidth = 'w-[290px]';
+  // Calculate width to match the 4 nav buttons (w-12 = 48px each, gap-2 = 8px)
+  // 4 buttons * 48px + 3 gaps * 8px = 216px
+  const selectorWidth = 'w-[216px]';
 
   return (
     <div className="flex flex-col gap-3">
@@ -169,12 +169,12 @@ export const ControlSection: React.FC<ControlSectionProps> = ({
 
           {/* Branch Dropdown Menu (opens up) */}
           {isBranchOpen && (
-            <div className="absolute bottom-full left-0 mb-2 z-[100] min-w-[140px] bg-[#1a1a1a] backdrop-blur-xl border border-white/10 rounded-xl shadow-xl shadow-black/50 overflow-hidden">
+            <div className="absolute bottom-full left-0 mb-2 z-[100] min-w-[140px] bg-[#1a1a1a] backdrop-blur-xl border border-white/10 rounded-xl shadow-xl shadow-black/50 overflow-hidden p-1">
               {[GameBranch.RELEASE, GameBranch.PRE_RELEASE].map((branch) => (
                 <button
                   key={branch}
                   onClick={() => handleBranchSelect(branch)}
-                  className={`w-full px-3 py-2 flex items-center gap-2 text-sm ${currentBranch === branch
+                  className={`w-full px-3 py-2 flex items-center gap-2 text-sm rounded-lg ${currentBranch === branch
                     ? 'bg-white/20 text-white'
                     : 'text-white/70 hover:bg-white/10 hover:text-white'
                     }`}
@@ -218,7 +218,7 @@ export const ControlSection: React.FC<ControlSectionProps> = ({
 
           {/* Version Dropdown Menu (opens up) */}
           {isVersionOpen && (
-            <div className="absolute bottom-full right-0 mb-2 z-[100] min-w-[120px] max-h-60 overflow-y-auto bg-[#1a1a1a] backdrop-blur-xl border border-white/10 rounded-xl shadow-xl shadow-black/50">
+            <div className="absolute bottom-full right-0 mb-2 z-[100] min-w-[120px] max-h-60 overflow-y-auto bg-[#1a1a1a] backdrop-blur-xl border border-white/10 rounded-xl shadow-xl shadow-black/50 p-1">
               {availableVersions.length > 0 ? (
                 availableVersions.map((version) => {
                   const isInstalled = (installedVersions || []).includes(version);
@@ -226,7 +226,7 @@ export const ControlSection: React.FC<ControlSectionProps> = ({
                     <button
                       key={version}
                       onClick={() => handleVersionSelect(version)}
-                      className={`w-full px-3 py-2 flex items-center justify-between gap-2 text-sm ${currentVersion === version
+                      className={`w-full px-3 py-2 flex items-center justify-between gap-2 text-sm rounded-lg ${currentVersion === version
                         ? 'bg-[#FFA845]/20 text-[#FFA845]'
                         : 'text-white/70 hover:bg-white/10 hover:text-white'
                         }`}
@@ -268,21 +268,13 @@ export const ControlSection: React.FC<ControlSectionProps> = ({
           icon={<HardDrive size={18} />}
           tooltip={t('Change Instance Location')}
         />
-        <NavBtn onClick={openGitHub} icon={<Github size={18} />} tooltip="GitHub" />
-
-        <NavBtn onClick={openBugReport} icon={<Bug size={18} />} tooltip={t('Report Bug')} />
-
-        <LanguageSelector
-          currentBranch={currentBranch}
-          currentVersion={currentVersion}
-          onShowModManager={actions.showModManager}
-        />
+        <NavBtn onClick={onOpenSettings} icon={<Settings size={18} />} tooltip={t('Settings')} />
         <button
           onClick={openCoffee}
           className="h-12 px-4 rounded-xl glass border border-white/5 flex items-center justify-center gap-2 text-white/60 hover:text-[#FFA845] hover:bg-[#FFA845]/10 active:scale-95 transition-all duration-150 relative group whitespace-nowrap"
         >
           <span className="text-xs">{t('Buy me a')}</span>
-          <Coffee size={18} />
+          <CoffeeIcon size={20} />
         </button>
 
         {/* Spacer + Disclaimer in center */}

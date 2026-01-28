@@ -116,6 +116,8 @@ export function SearchMods(arg1:string,arg2:number,arg3:number,arg4:Array<string
 
 export function SelectInstanceDirectory():Promise<string>;
 
+export function BrowseFolder(arg1?:string|null):Promise<string|null>;
+
 export function SetInstanceDirectory(arg1:string):Promise<string>;
 
 export function SetAuthDomain(arg1:string):Promise<void>;
@@ -150,3 +152,49 @@ export function UninstallMod(arg1:string):Promise<void>;
 export function Update():Promise<void>;
 
 export function GetRecentLogs(arg1?:number):Promise<Array<string>>;
+
+export function GetLauncherBranch():Promise<string>;
+
+export function SetLauncherBranch(arg1:string):Promise<boolean>;
+
+export interface RosettaStatus {
+    NeedsInstall: boolean;
+    Message: string;
+    Command: string;
+    TutorialUrl?: string;
+}
+
+export function CheckRosettaStatus():Promise<RosettaStatus | null>;
+
+// Close after launch setting
+export function GetCloseAfterLaunch():Promise<boolean>;
+export function SetCloseAfterLaunch(arg1:boolean):Promise<boolean>;
+
+// Discord announcements settings
+export function GetShowDiscordAnnouncements():Promise<boolean>;
+export function SetShowDiscordAnnouncements(arg1:boolean):Promise<boolean>;
+export function DismissAnnouncement(arg1:string):Promise<boolean>;
+export function ReactToAnnouncement(arg1:string, arg2:string):Promise<boolean>;
+
+export interface DiscordAnnouncement {
+    Id: string;
+    Content: string;
+    AuthorName: string;
+    AuthorAvatar?: string;
+    AuthorRole?: string;
+    RoleColor?: string;
+    ImageUrl?: string;
+    Timestamp: string;
+}
+
+export function GetDiscordAnnouncement():Promise<DiscordAnnouncement | null>;
+// Launcher folder management
+export function OpenLauncherFolder():Promise<void>;
+export function DeleteLauncherData():Promise<boolean>;
+export function GetLauncherFolderPath():Promise<string>;
+
+// Developer testing
+export function GetTestAnnouncement():Promise<DiscordAnnouncement | null>;
+
+// Window controls
+export function WindowClose():Promise<void>;

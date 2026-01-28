@@ -315,6 +315,10 @@ export function SelectInstanceDirectory() {
     return callBackend('SelectInstanceDirectory');
 }
 
+export function BrowseFolder(initialPath) {
+    return callBackend('BrowseFolder', initialPath || null);
+}
+
 export function SetInstanceDirectory(path) {
     return callBackend('SetInstanceDirectory', path);
 }
@@ -373,4 +377,63 @@ export function UninstallMod(modId) {
 
 export function Update() {
     return callBackend('Update');
+}
+
+export function GetLauncherBranch() {
+    return callBackend('GetLauncherBranch');
+}
+
+export function SetLauncherBranch(branch) {
+    return callBackend('SetLauncherBranch', branch);
+}
+
+export function CheckRosettaStatus() {
+    return callBackend('CheckRosettaStatus');
+}
+
+export function GetCloseAfterLaunch() {
+    return callBackend('GetCloseAfterLaunch');
+}
+
+export function SetCloseAfterLaunch(enabled) {
+    return callBackend('SetCloseAfterLaunch', enabled);
+}
+
+export function GetShowDiscordAnnouncements() {
+    return callBackend('GetShowDiscordAnnouncements');
+}
+
+export function SetShowDiscordAnnouncements(enabled) {
+    return callBackend('SetShowDiscordAnnouncements', enabled);
+}
+
+export function DismissAnnouncement(announcementId) {
+    return callBackend('DismissAnnouncement', announcementId);
+}
+
+export function ReactToAnnouncement(messageId, emoji) {
+    return callBackend('ReactToAnnouncement', messageId, emoji);
+}
+
+export function GetDiscordAnnouncement() {
+    return callBackend('GetDiscordAnnouncement');
+}
+export function OpenLauncherFolder() {
+    return callBackend('OpenLauncherFolder');
+}
+
+export function DeleteLauncherData() {
+    return callBackend('DeleteLauncherData');
+}
+
+export function GetLauncherFolderPath() {
+    return callBackend('GetLauncherFolderPath');
+}
+
+export function GetTestAnnouncement() {
+    return callBackend('GetTestAnnouncement');
+}
+
+export function WindowClose() {
+    return callBackend('WindowClose');
 }

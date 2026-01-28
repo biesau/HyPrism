@@ -36,6 +36,11 @@ frontend/package-lock.json
 frontend/yarn.lock
 frontend/pnpm-lock.yaml
 
+# Environment files (contains secrets)
+.env
+.env.local
+.env.*.local
+
 # Frontend cache
 frontend/.vite/
 frontend/.turbo/

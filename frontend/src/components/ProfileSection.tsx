@@ -124,7 +124,7 @@ export const ProfileSection: React.FC<ProfileSectionProps> = ({
           className="text-xs text-white/50 hover:text-white/80 transition-colors w-fit"
           onClick={() => setShowUuidEditor((v) => !v)}
         >
-          Our secret
+          Shh...
         </button>
         {showUuidEditor && (
           <div className="flex items-center gap-2">

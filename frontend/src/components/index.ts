@@ -8,3 +8,5 @@ export { ErrorModal } from './ErrorModal';
 export { DeleteConfirmationModal } from './DeleteConfirmationModal';
 export { ModManager } from './ModManager';
 export { LogsModal } from './LogsModal';
+export { SettingsModal } from './SettingsModal';
+export { DiscordAnnouncement } from './DiscordAnnouncement';

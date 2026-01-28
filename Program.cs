@@ -269,6 +269,26 @@ class Program
                             GetArg<string>(request.Args, 0),
                             GetArg<int>(request.Args, 1)),
                         
+                        // Settings
+                        "GetLauncherBranch" => app.GetLauncherBranch(),
+                        "SetLauncherBranch" => app.SetLauncherBranch(GetArg<string>(request.Args, 0)),
+                        "CheckRosettaStatus" => app.CheckRosettaStatus(),
+                        "GetCloseAfterLaunch" => app.GetCloseAfterLaunch(),
+                        "SetCloseAfterLaunch" => app.SetCloseAfterLaunch(GetArg<bool>(request.Args, 0)),
+                        "GetShowDiscordAnnouncements" => app.GetShowDiscordAnnouncements(),
+                        "SetShowDiscordAnnouncements" => app.SetShowDiscordAnnouncements(GetArg<bool>(request.Args, 0)),
+                        "DismissAnnouncement" => app.DismissAnnouncement(GetArg<string>(request.Args, 0)),
+                        "OpenLauncherFolder" => app.OpenLauncherFolder(),
+                        "DeleteLauncherData" => app.DeleteLauncherData(),
+                        "GetLauncherFolderPath" => app.GetLauncherFolderPath(),
+                        "GetTestAnnouncement" => app.GetTestAnnouncement(),
+                        
+                        // Discord
+                        "GetDiscordAnnouncement" => await app.GetDiscordAnnouncementAsync(),
+                        "ReactToAnnouncement" => await app.ReactToAnnouncementAsync(
+                            GetArg<string>(request.Args, 0),
+                            GetArg<string>(request.Args, 1)),
+                        
                         // Window Controls
                         "WindowMinimize" => SetMinimized(window, true),
                         "WindowMaximize" => ToggleMaximize(window),
