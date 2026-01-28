@@ -21,8 +21,7 @@ A multiplatform Hytale launcher with mod manager and more!
 ## Installation
 Downloads are available in releases
 
-## Platform Support
-- Windows (fully supported)
-- macOS (ARM64)
-- Linux (Flatpak recommended, AppImage has dependency issues)
-  - For Arch Users use https://aur.archlinux.org/packages/hyprism-git (paru / yay -S hyprism-git). DO NOT USE UPDATE BUTTON IN LAUNCHER! UPDATE ONLY USE AUR REPO!
+## Build instructions
+Backend : dotnet build (for building) and dotnet run (for running the launcher)
+Frontend : npm run build
+
