@@ -1,7 +1,7 @@
 {
   "app-id": "dev.hyprism.HyPrism",
   "runtime": "org.freedesktop.Platform",
-  "runtime-version": "22.08",
+  "runtime-version": "25.08",
   "sdk": "org.freedesktop.Sdk",
   "sdk-extensions": ["org.freedesktop.Sdk.Extension.golang", "org.freedesktop.Sdk.Extension.node18"],
   "command": "HyPrism",
