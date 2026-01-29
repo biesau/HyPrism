@@ -2216,7 +2216,9 @@ public class AppService : IDisposable
         }
     }
 
-    // JRE Download - uses jre.json config for direct GitHub download links
+    // JRE Download - uses official Hytale JRE from launcher.hytale.com
+    private const string RequiredJreVersion = "25.0.1_8";
+    
     private async Task EnsureJREInstalledAsync(Action<int, string> progressCallback)
     {
         string jreDir = Path.Combine(_appDir, "jre");
@@ -2231,66 +2233,125 @@ public class AppService : IDisposable
             javaBin = Path.Combine(jreDir, "bin", "java");
         }
         
-        if (File.Exists(javaBin))
+        // Check if correct JRE version is installed by looking for version marker file
+        string versionMarkerPath = Path.Combine(jreDir, ".jre_version");
+        
+        if (File.Exists(javaBin) && File.Exists(versionMarkerPath))
         {
             try
             {
-                int featureVersion = await GetJavaFeatureVersionAsync(javaBin);
-                bool supportsShenandoah = await SupportsShenandoahAsync(javaBin);
-                if (supportsShenandoah && featureVersion >= 21)
+                string installedVersion = await File.ReadAllTextAsync(versionMarkerPath);
+                if (installedVersion.Trim() == RequiredJreVersion)
                 {
-                    Logger.Info("JRE", $"Java Runtime already installed (feature {featureVersion}) and supports Shenandoah generational mode");
+                    Logger.Info("JRE", $"Java Runtime {RequiredJreVersion} already installed");
                     EnsureJavaWrapper(javaBin);
                     progressCallback(100, "Java Runtime ready");
                     return;
                 }
-
-                Logger.Warning("JRE", $"Installed Java (feature {featureVersion}) is missing required features. Reinstalling JRE 21...");
+                Logger.Warning("JRE", $"Installed JRE version {installedVersion.Trim()} != required {RequiredJreVersion}. Reinstalling...");
             }
             catch (Exception ex)
             {
-                Logger.Warning("JRE", $"Failed to validate Java features: {ex.Message}. Reinstalling...");
+                Logger.Warning("JRE", $"Failed to check JRE version: {ex.Message}. Reinstalling...");
+            }
+        }
+        else if (File.Exists(javaBin))
+        {
+            // Old installation without version marker - reinstall
+            Logger.Warning("JRE", "JRE version marker not found. Reinstalling official Hytale JRE...");
+        }
+        
+        // Delete old JRE if exists
+        if (Directory.Exists(jreDir))
+        {
+            try
+            {
+                Directory.Delete(jreDir, true);
+                Logger.Info("JRE", "Removed old JRE installation");
+            }
+            catch (Exception ex)
+            {
+                Logger.Warning("JRE", $"Failed to remove old JRE: {ex.Message}");
             }
         }
         
         progressCallback(0, "Downloading Java Runtime...");
-        Logger.Info("JRE", "Downloading Java Runtime...");
+        Logger.Info("JRE", "Downloading official Hytale Java Runtime...");
         
-        // Determine platform
-        string osName = RuntimeInformation.IsOSPlatform(OSPlatform.OSX) ? "mac" : 
+        // Determine platform - Hytale uses different naming convention
+        string osName = RuntimeInformation.IsOSPlatform(OSPlatform.OSX) ? "darwin" : 
                         RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "windows" : "linux";
-        string arch = RuntimeInformation.OSArchitecture == Architecture.Arm64 ? "aarch64" : "x64";
+        string arch = RuntimeInformation.OSArchitecture == Architecture.Arm64 ? "arm64" : "amd64";
         string archiveType = osName == "windows" ? "zip" : "tar.gz";
         
-        // Load JRE config from embedded JSON or fallback to API
+        // First try to fetch latest JRE info from Hytale launcher directly
         string? url = null;
+        string? expectedSha256 = null;
+        
         try
         {
-            var jreConfigPath = Path.Combine(AppContext.BaseDirectory, "jre.json");
-            if (File.Exists(jreConfigPath))
+            Logger.Info("JRE", "Fetching JRE info from launcher.hytale.com...");
+            var jreInfoResponse = await HttpClient.GetStringAsync("https://launcher.hytale.com/version/release/jre.json");
+            var jreInfo = JsonSerializer.Deserialize<JsonElement>(jreInfoResponse);
+            
+            if (jreInfo.TryGetProperty("download_url", out var downloadUrls) &&
+                downloadUrls.TryGetProperty(osName, out var osUrls) &&
+                osUrls.TryGetProperty(arch, out var archInfo))
             {
-                var jreConfigJson = await File.ReadAllTextAsync(jreConfigPath);
-                var jreConfig = JsonSerializer.Deserialize<JsonElement>(jreConfigJson);
-                
-                if (jreConfig.TryGetProperty("temurin", out var temurin) &&
-                    temurin.TryGetProperty(osName, out var osConfig) &&
-                    osConfig.TryGetProperty(arch, out var archConfig))
+                if (archInfo.TryGetProperty("url", out var urlProp))
                 {
-                    url = archConfig.GetString();
-                    Logger.Info("JRE", $"Using JRE URL from config: {url}");
+                    url = urlProp.GetString();
                 }
+                if (archInfo.TryGetProperty("sha256", out var sha256Prop))
+                {
+                    expectedSha256 = sha256Prop.GetString();
+                }
+                Logger.Info("JRE", $"Got JRE URL from Hytale launcher: {url}");
             }
         }
         catch (Exception ex)
         {
-            Logger.Warning("JRE", $"Failed to load jre.json config: {ex.Message}");
+            Logger.Warning("JRE", $"Failed to fetch from launcher.hytale.com: {ex.Message}");
         }
         
-        // Fallback to Adoptium API if JSON config not found
+        // Fallback to local jre.json config
         if (string.IsNullOrEmpty(url))
         {
-            url = $"https://api.adoptium.net/v3/binary/latest/21/ga/{osName}/{arch}/jre/hotspot/normal/eclipse?project=jdk";
-            Logger.Info("JRE", $"Using Adoptium API fallback (JRE 21): {url}");
+            try
+            {
+                var jreConfigPath = Path.Combine(AppContext.BaseDirectory, "jre.json");
+                if (File.Exists(jreConfigPath))
+                {
+                    var jreConfigJson = await File.ReadAllTextAsync(jreConfigPath);
+                    var jreConfig = JsonSerializer.Deserialize<JsonElement>(jreConfigJson);
+                    
+                    if (jreConfig.TryGetProperty("download_url", out var downloadUrls) &&
+                        downloadUrls.TryGetProperty(osName, out var osUrls) &&
+                        osUrls.TryGetProperty(arch, out var archInfo))
+                    {
+                        if (archInfo.TryGetProperty("url", out var urlProp))
+                        {
+                            url = urlProp.GetString();
+                        }
+                        if (archInfo.TryGetProperty("sha256", out var sha256Prop))
+                        {
+                            expectedSha256 = sha256Prop.GetString();
+                        }
+                        Logger.Info("JRE", $"Using JRE URL from local config: {url}");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Warning("JRE", $"Failed to load local jre.json: {ex.Message}");
+            }
+        }
+        
+        // Ultimate fallback - hardcoded URLs for official Hytale JRE
+        if (string.IsNullOrEmpty(url))
+        {
+            url = $"https://launcher.hytale.com/redist/jre/{osName}/{arch}/jre-{RequiredJreVersion}.{archiveType}";
+            Logger.Info("JRE", $"Using hardcoded Hytale JRE URL: {url}");
         }
         
         string cacheDir = Path.Combine(_appDir, "cache");
@@ -2402,11 +2463,22 @@ public class AppService : IDisposable
             await SetupMacOSJavaSymlinksAsync(jreDir);
         }
 
-        // Wrap java to strip unsupported Shenandoah flags and point to the freshly installed JRE 21
+        // Wrap java to strip unsupported flags and point to the freshly installed JRE
         EnsureJavaWrapper(javaBin);
         
+        // Write version marker file to track installed version
+        try
+        {
+            await File.WriteAllTextAsync(versionMarkerPath, RequiredJreVersion);
+            Logger.Info("JRE", $"Written version marker: {RequiredJreVersion}");
+        }
+        catch (Exception ex)
+        {
+            Logger.Warning("JRE", $"Failed to write version marker: {ex.Message}");
+        }
+        
         progressCallback(100, "Java Runtime installed");
-        Logger.Success("JRE", "Java Runtime installed successfully");
+        Logger.Success("JRE", $"Hytale Java Runtime {RequiredJreVersion} installed successfully");
     }
 
     private async Task SetupMacOSJavaSymlinksAsync(string jreDir)
