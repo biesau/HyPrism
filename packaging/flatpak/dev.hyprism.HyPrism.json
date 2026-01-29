@@ -5,7 +5,7 @@
   "sdk": "org.freedesktop.Sdk",
   "sdk-extensions": [
     "org.freedesktop.Sdk.Extension.golang",
-    "org.freedesktop.Sdk.Extension.node18",
+    "org.freedesktop.Sdk.Extension.node22",
     "org.freedesktop.Sdk.Extension.ruby"
   ],
   "command": "HyPrism",
