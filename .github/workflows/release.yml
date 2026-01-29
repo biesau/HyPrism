@@ -363,8 +363,8 @@ jobs:
           sudo apt-get install -y flatpak flatpak-builder || true
 
           # Configure remotes: flathub and flathub-beta (system preferred, fallback to user)
-          flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo || flatpak --user remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo || true
-          flatpak remote-add --if-not-exists flathub-beta https://flathub.org/repo/flathub.flatpakrepo || flatpak --user remote-add --if-not-exists flathub-beta https://flathub.org/repo/flathub.flatpakrepo || true
+          flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo || flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo || true
+          flatpak remote-add --if-not-exists flathub-beta https://flathub.org/repo/flathub.flatpakrepo || flatpak remote-add --if-not-exists flathub-beta https://flathub.org/repo/flathub.flatpakrepo || true
 
           # Build with dependencies pulled from flathub and flathub-beta
           flatpak-builder --force-clean --repo=repo builddir --install-deps-from=flathub --install-deps-from=flathub-beta packaging/flatpak/dev.hyprism.HyPrism.json > flatpak-build.log 2>&1 || true
