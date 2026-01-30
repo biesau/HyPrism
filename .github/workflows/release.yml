@@ -389,7 +389,7 @@ jobs:
       - name: Create version.json for auto-updater
         run: |
           VERSION="${{ steps.determine_version.outputs.version }}"
-          TAG_NAME="${{ steps.determine_version.outputs.tag_name }}"
+          TAG_NAME="v${{ steps.determine_version.outputs.version }}"
 
           cat > release-assets/version.json << EOF
           {
@@ -435,6 +435,15 @@ jobs:
           }
           EOF
 
+      - name: Validate release tag
+        run: |
+          set -euo pipefail
+          TAG_NAME="v${{ steps.determine_version.outputs.version }}"
+          if [ -z "$TAG_NAME" ] || [ "$TAG_NAME" = "main" ]; then
+            echo "ERROR: Invalid release tag: '$TAG_NAME'" >&2
+            exit 1
+          fi
+
       - name: Detect missing release artifacts
         id: detect_missing
         run: |
@@ -475,10 +484,10 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: ${{ steps.determine_version.outputs.tag_name }}
-          name: HyPrism ${{ steps.determine_version.outputs.tag_name }}
+          tag_name: v${{ steps.determine_version.outputs.version }}
+          name: HyPrism v${{ steps.determine_version.outputs.version }}
           body: |
-            ## HyPrism ${{ steps.determine_version.outputs.tag_name }}
+            ## HyPrism v${{ steps.determine_version.outputs.version }}
 
             ${{ steps.detect_missing.outputs.warning_block }}
             
