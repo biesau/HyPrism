@@ -260,6 +260,8 @@ if [[ "$(uname -s)" == "Linux" ]]; then
     chmod +x "$APPDIR/usr/bin/HyPrism"
     [[ -f "$DESKTOP_SRC" ]] && cp "$DESKTOP_SRC" "$APPDIR/usr/share/applications/dev.hyprism.HyPrism.desktop"
     [[ -f "$ICON_SRC" ]] && cp "$ICON_SRC" "$APPDIR/usr/share/icons/hicolor/256x256/apps/dev.hyprism.HyPrism.png"
+    # appimagetool expects the icon at AppDir root when referenced in desktop file
+    [[ -f "$ICON_SRC" ]] && cp "$ICON_SRC" "$APPDIR/dev.hyprism.HyPrism.png"
     cat > "$APPDIR/AppRun" <<'EOF'
 #!/bin/sh
 exec "$(dirname "$0")/usr/bin/HyPrism" "$@"
