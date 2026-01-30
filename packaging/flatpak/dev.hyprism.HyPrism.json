@@ -24,10 +24,15 @@
       "build-commands": [
         "set -ex",
         "# Configure and build Ruby into /app so it is available during subsequent module builds",
-        "./configure --prefix=/app --disable-install-doc --enable-shared",
+        "./configure --prefix=/app --disable-install-doc --enable-shared --with-openssl-dir=/usr --with-zlib-dir=/usr --with-readline-dir=/usr --with-libyaml-dir=/usr --with-gdbm-dir=/usr",
         "make -j$(nproc)",
         "make install"
       ],
+      "build-options": {
+        "env": {
+          "PKG_CONFIG_PATH": "/usr/lib/pkgconfig:/usr/share/pkgconfig"
+        }
+      },
       "sources": [
         {
           "type": "archive",
