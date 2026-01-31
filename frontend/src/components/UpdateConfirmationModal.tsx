@@ -21,7 +21,7 @@ export const UpdateConfirmationModal = ({
     onCancel
 }: UpdateConfirmationModalProps) => {
     const { t } = useTranslation();
-    const { accentColor } = useAccentColor();
+    const { accentColor, accentTextColor } = useAccentColor();
     const [isLoading, setIsLoading] = useState(false);
 
     const handleConfirmWithCopy = async () => {
@@ -97,8 +97,8 @@ export const UpdateConfirmationModal = ({
                                 <button
                                     onClick={handleConfirmWithCopy}
                                     disabled={isLoading}
-                                    className="w-full h-12 rounded-xl text-black font-medium flex items-center justify-center gap-2 transition-colors disabled:opacity-50 hover:opacity-90"
-                                    style={{ backgroundColor: accentColor }}
+                                    className="w-full h-12 rounded-xl font-medium flex items-center justify-center gap-2 transition-colors disabled:opacity-50 hover:opacity-90"
+                                    style={{ backgroundColor: accentColor, color: accentTextColor }}
                                 >
                                     <Copy size={18} />
                                     {t('Update & Copy Data')}
@@ -122,8 +122,8 @@ export const UpdateConfirmationModal = ({
                             <button
                                 onClick={handleConfirmWithoutCopy}
                                 disabled={isLoading}
-                                className="w-full h-12 rounded-xl text-black font-medium flex items-center justify-center gap-2 transition-colors disabled:opacity-50 hover:opacity-90"
-                                style={{ backgroundColor: accentColor }}
+                                className="w-full h-12 rounded-xl font-medium flex items-center justify-center gap-2 transition-colors disabled:opacity-50 hover:opacity-90"
+                                style={{ backgroundColor: accentColor, color: accentTextColor }}
                             >
                                 {t('Update Now')}
                             </button>

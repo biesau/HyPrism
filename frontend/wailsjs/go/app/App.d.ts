@@ -85,6 +85,30 @@ export function GetNick():Promise<string>;
 
 export function GetAvatarPreview():Promise<string|null>;
 
+export function ClearAvatarCache():Promise<boolean>;
+
+// Profile Management
+export interface Profile {
+    Id: string;
+    UUID: string;
+    Name: string;
+    CreatedAt: string;
+}
+
+export function GetProfiles():Promise<Profile[]>;
+
+export function GetActiveProfileIndex():Promise<number>;
+
+export function CreateProfile(name:string, uuid:string):Promise<Profile|null>;
+
+export function DeleteProfile(profileId:string):Promise<boolean>;
+
+export function SwitchProfile(index:number):Promise<boolean>;
+
+export function UpdateProfile(profileId:string, newName:string|null, newUuid:string|null):Promise<boolean>;
+
+export function SaveCurrentAsProfile():Promise<Profile|null>;
+
 export function GetOnlineMode():Promise<boolean>;
 
 export function GetPlatformInfo():Promise<Record<string, string>>;
@@ -105,6 +129,16 @@ export function InstallModFileToInstance(arg1:string,arg2:string,arg3:string,arg
 
 export function InstallModToInstance(arg1:number,arg2:string,arg3:number):Promise<void>;
 
+export function InstallLocalModFile(arg1:string,arg2:string,arg3:number):Promise<boolean>;
+
+export function ExportModList(arg1:string,arg2:number):Promise<string|null>;
+
+export function ExportModsToFolder(arg1:string,arg2:number,arg3:string,arg4:string):Promise<string|null>;
+
+export function GetLastExportPath():Promise<string>;
+
+export function ImportModList(arg1:string,arg2:string,arg3:number):Promise<number>;
+
 export function IsGameInstalled():Promise<boolean>;
 
 export function IsGameRunning():Promise<boolean>;
@@ -118,6 +152,18 @@ export function OpenGameFolder():Promise<void>;
 export function OpenInstanceModsFolder(arg1:string,arg2:number):Promise<void>;
 
 export function OpenInstanceFolder(arg1:string,arg2:number):Promise<void>;
+
+export function ExportInstance(arg1:string,arg2:number):Promise<string|null>;
+
+export interface InstalledVersionInfo {
+    Version: number;
+    Branch: string;
+    Path: string;
+    UserDataSize: number;
+    HasUserData: boolean;
+}
+
+export function GetInstalledVersionsDetailed():Promise<Array<InstalledVersionInfo>>;
 
 export function OpenModsFolder():Promise<void>;
 
@@ -272,6 +318,10 @@ export function SetLauncherDataDirectory(arg1:string):Promise<string|null>;
 // Hardware acceleration
 export function GetDisableHardwareAcceleration():Promise<boolean>;
 export function SetDisableHardwareAcceleration(arg1:boolean):Promise<boolean>;
+
+// Game language settings
+export function SetGameLanguage(arg1:string):Promise<boolean>;
+export function GetAvailableGameLanguages():Promise<string[]>;
 
 // Window controls
 export function WindowClose():Promise<void>;

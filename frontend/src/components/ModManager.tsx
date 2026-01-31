@@ -2,7 +2,8 @@ import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import {
   X, Search, Download, Trash2, FolderOpen,
   Package, Loader2, AlertCircle,
-  RefreshCw, Check, ChevronDown, ChevronLeft, ChevronRight, ArrowUpCircle, FileText
+  RefreshCw, Check, ChevronDown, ChevronLeft, ChevronRight, ArrowUpCircle, FileText,
+  Upload, Share
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { BrowserOpenURL } from '../../wailsjs/runtime/runtime';
@@ -10,7 +11,8 @@ import {
   SearchMods, GetModFiles, GetModCategories,
   GetInstanceInstalledMods, InstallModFileToInstance,
   UninstallInstanceMod,
-  OpenInstanceModsFolder, CheckInstanceModUpdates
+  OpenInstanceModsFolder, CheckInstanceModUpdates,
+  InstallLocalModFile, ExportModsToFolder, GetLastExportPath, ImportModList, BrowseFolder
 } from '../../wailsjs/go/app/App';
 import { GameBranch } from '@/constants/enums';
 import { useAccentColor } from '../contexts/AccentColorContext';
@@ -92,10 +94,11 @@ const ConfirmModal: React.FC<{
   confirmText: string;
   confirmColor: string;
   confirmStyle?: React.CSSProperties;
+  confirmTextColor?: string;
   onConfirm: () => void;
   onCancel: () => void;
   children?: React.ReactNode;
-}> = ({ title, message, confirmText, confirmColor, confirmStyle, onConfirm, onCancel, children }) => {
+}> = ({ title, message, confirmText, confirmColor, confirmStyle, confirmTextColor, onConfirm, onCancel, children }) => {
   const { t } = useTranslation();
   return (
     <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60">
@@ -110,7 +113,7 @@ const ConfirmModal: React.FC<{
           >
             {t('Cancel')}
           </button>
-          <button onClick={onConfirm} className={`flex-1 py-2 rounded-xl text-white text-sm ${confirmColor}`} style={confirmStyle}>
+          <button onClick={onConfirm} className={`flex-1 py-2 rounded-xl text-sm ${confirmColor}`} style={{ ...confirmStyle, color: confirmTextColor }}>
             {confirmText}
           </button>
         </div>
@@ -141,7 +144,7 @@ export const ModManager: React.FC<ModManagerProps> = ({
   initialSearchQuery = ''
 }) => {
   const { t } = useTranslation();
-  const { accentColor } = useAccentColor();
+  const { accentColor, accentTextColor } = useAccentColor();
   // Tab state
   const [activeTab, setActiveTab] = useState<'installed' | 'browse'>(initialSearchQuery ? 'browse' : 'installed');
 
@@ -156,6 +159,7 @@ export const ModManager: React.FC<ModManagerProps> = ({
   const [modsWithUpdates, setModsWithUpdates] = useState<Mod[]>([]);
   const [isLoadingUpdates, setIsLoadingUpdates] = useState(false);
   const [showUpdatesModal, setShowUpdatesModal] = useState(false);
+  const [updateCount, setUpdateCount] = useState(0);
 
   // Browse mods
   const [searchQuery, setSearchQuery] = useState(initialSearchQuery);
@@ -190,12 +194,23 @@ export const ModManager: React.FC<ModManagerProps> = ({
   const [downloadProgress, setDownloadProgress] = useState<{ current: number; total: number; currentMod: string } | null>(null);
   const [downloadJobs, setDownloadJobs] = useState<DownloadJobStatus[]>([]);
   const [error, setError] = useState<string | null>(null);
+  
+  // Drag and drop
+  const [isDragging, setIsDragging] = useState(false);
+  const [isImporting, setIsImporting] = useState(false);
+  const [importProgress, setImportProgress] = useState<string | null>(null);
 
   // Confirmation modals
   const [confirmModal, setConfirmModal] = useState<{
     type: 'download' | 'delete';
     items: Array<{ id: string | number; name: string; fileId?: number | string }>;
   } | null>(null);
+
+  // Export modal
+  const [showExportModal, setShowExportModal] = useState(false);
+  const [exportPath, setExportPath] = useState('');
+  const [exportType, setExportType] = useState<'modlist' | 'zip'>('modlist');
+  const [isExporting, setIsExporting] = useState(false);
 
   // Multi-select tracking
   const [lastClickedIndex, setLastClickedIndex] = useState<number | null>(null);
@@ -520,23 +535,35 @@ export const ModManager: React.FC<ModManagerProps> = ({
 
     if (activeTab === 'browse' && selectedBrowseMods.size > 0) {
       const selected = Array.from(selectedBrowseMods);
+      console.log(`[ModManager] Preparing download for ${selected.length} selected mods`);
+      
       const resolved = await Promise.all(
         selected.map(async (modId) => {
           const mod = searchResults.find((m) => m.id === modId);
           const modKey = normalizeModKey(modId);
+          
+          // Check cache first, then selectedVersions
           let fileId = selectedVersions.get(modKey);
-
+          
+          // If no fileId, load the files and get the first one directly
           if (!fileId) {
+            console.log(`[ModManager] Loading files for mod ${modId} (${mod?.name})`);
             const files = await loadModFiles(modId);
-            fileId = selectedVersions.get(modKey) || files?.[0]?.id;
+            // Use the first file directly from the returned array (not from state which might not be updated yet)
+            fileId = files?.[0]?.id;
+            console.log(`[ModManager] Mod ${modId} files loaded, using fileId: ${fileId}`);
           }
 
-          if (!fileId) return null;
+          if (!fileId) {
+            console.warn(`[ModManager] No file found for mod ${modId} (${mod?.name})`);
+            return null;
+          }
           return { id: modId, name: mod?.name || 'Unknown', fileId } as { id: string | number; name: string; fileId: string | number };
         })
       );
 
       items = resolved.filter((x): x is { id: string | number; name: string; fileId: string | number } => x !== null);
+      console.log(`[ModManager] ${items.length}/${selected.length} mods have valid fileIds`);
     } else if (activeTab === 'installed' && selectedInstalledMods.size > 0) {
       const installedItems = Array.from(selectedInstalledMods)
         .map((modId) => {
@@ -574,34 +601,42 @@ export const ModManager: React.FC<ModManagerProps> = ({
   };
 
   const runDownloadQueue = async (items: Array<{ id: string | number; name: string; fileId: string | number }>) => {
-    const maxConcurrency = 3;
-    const maxRetries = 2;
+    // Reduce concurrency to 1 to avoid race conditions and rate limiting
+    const maxConcurrency = 1;
+    const maxRetries = 3;
 
     setIsDownloading(true);
     setDownloadProgress({ current: 0, total: items.length, currentMod: '' });
     setDownloadJobs(items.map((item) => ({ id: item.id, name: item.name, status: 'pending', attempts: 0 })));
 
     let completed = 0;
+    let successCount = 0;
     const queue = [...items];
 
-    const runJob = async (item: { id: string | number; name: string; fileId: string | number }) => {
+    const runJob = async (item: { id: string | number; name: string; fileId: string | number }): Promise<boolean> => {
       for (let attempt = 1; attempt <= maxRetries; attempt++) {
         setDownloadJobs((prev) => prev.map((j) => j.id === item.id ? { ...j, status: 'running', attempts: attempt } : j));
         try {
+          console.log(`[ModManager] Downloading ${item.name} (attempt ${attempt}/${maxRetries})`);
           const ok = await InstallModFileToInstance(String(item.id), String(item.fileId), currentBranch, currentVersion);
           if (!ok) {
-            throw new Error(t('Backend refused to install this mod. Make sure the game is installed.'));
+            throw new Error(t('Backend refused to install this mod. Please try again.'));
           }
+          console.log(`[ModManager] Successfully installed ${item.name}`);
           setDownloadJobs((prev) => prev.map((j) => j.id === item.id ? { ...j, status: 'success', attempts: attempt } : j));
-          return;
+          return true;
         } catch (err: any) {
+          console.error(`[ModManager] Failed to install ${item.name} (attempt ${attempt}):`, err?.message);
           const isLast = attempt === maxRetries;
           setDownloadJobs((prev) => prev.map((j) => j.id === item.id ? { ...j, status: isLast ? 'error' : 'pending', attempts: attempt, error: err?.message } : j));
           if (isLast) {
-            throw err;
+            return false;
           }
+          // Wait before retry to avoid rate limiting
+          await new Promise(resolve => setTimeout(resolve, 500 * attempt));
         }
       }
+      return false;
     };
 
     const worker = async () => {
@@ -609,7 +644,8 @@ export const ModManager: React.FC<ModManagerProps> = ({
         const next = queue.shift();
         if (!next) break;
         try {
-          await runJob(next);
+          const success = await runJob(next);
+          if (success) successCount++;
         } finally {
           completed += 1;
           setDownloadProgress({ current: completed, total: items.length, currentMod: next.name });
@@ -618,6 +654,8 @@ export const ModManager: React.FC<ModManagerProps> = ({
     };
 
     await Promise.all(Array.from({ length: Math.min(maxConcurrency, items.length) }, () => worker()));
+    
+    console.log(`[ModManager] Download complete: ${successCount}/${items.length} mods installed successfully`);
   };
 
   // Handle confirm download
@@ -625,6 +663,15 @@ export const ModManager: React.FC<ModManagerProps> = ({
     if (!confirmModal || confirmModal.type !== 'download') return;
 
     const items = confirmModal.items.filter((i) => i.fileId);
+    console.log(`[ModManager] Starting download of ${items.length} mods (original: ${confirmModal.items.length})`);
+    if (items.length !== confirmModal.items.length) {
+      console.warn(`[ModManager] ${confirmModal.items.length - items.length} mods filtered out due to missing fileId`);
+      confirmModal.items.forEach(item => {
+        if (!item.fileId) {
+          console.warn(`[ModManager] Missing fileId for: ${item.name} (id: ${item.id})`);
+        }
+      });
+    }
     setConfirmModal(null);
     const errors: string[] = [];
 
@@ -666,19 +713,44 @@ export const ModManager: React.FC<ModManagerProps> = ({
     await loadInstalledMods();
   };
 
-  // Check for updates and show modal
-  const handleCheckUpdates = async () => {
+  // Check for updates (silently or show modal)
+  const checkForUpdates = useCallback(async (showModal = false) => {
     setIsLoadingUpdates(true);
     try {
       const updates = await CheckInstanceModUpdates(currentBranch, currentVersion);
-      setModsWithUpdates(updates || []);
-      setShowUpdatesModal(true);
+      // Normalize response - backend may use PascalCase or camelCase
+      const normalizedUpdates = (updates || []).map((mod: any) => ({
+        ...mod,
+        id: mod.id || mod.Id || '',
+        name: mod.name || mod.Name || '',
+        curseForgeId: mod.curseForgeId || mod.CurseForgeId,
+        latestFileId: mod.latestFileId || mod.LatestFileId,
+        latestVersion: mod.latestVersion || mod.LatestVersion,
+      } as Mod));
+      setModsWithUpdates(normalizedUpdates);
+      setUpdateCount(normalizedUpdates.length);
+      if (showModal) {
+        setShowUpdatesModal(true);
+      }
     } catch (err) {
       console.error('Failed to check for updates:', err);
       setModsWithUpdates([]);
-      setShowUpdatesModal(true);
+      setUpdateCount(0);
+      if (showModal) {
+        setShowUpdatesModal(true);
+      }
     }
     setIsLoadingUpdates(false);
+  }, [currentBranch, currentVersion]);
+
+  // Auto-check for updates when modal opens
+  useEffect(() => {
+    checkForUpdates(false);
+  }, [checkForUpdates]);
+
+  // Check for updates and show modal (button click)
+  const handleCheckUpdates = async () => {
+    await checkForUpdates(true);
   };
 
   // Handle confirm update from modal
@@ -715,6 +787,132 @@ export const ModManager: React.FC<ModManagerProps> = ({
       console.error('Failed to open folder:', err);
     }
   };
+  
+  // Open export modal
+  const handleOpenExportModal = async () => {
+    try {
+      const lastPath = await GetLastExportPath();
+      setExportPath(lastPath || '');
+      setShowExportModal(true);
+    } catch (err) {
+      console.error('Failed to get last export path:', err);
+      setShowExportModal(true);
+    }
+  };
+  
+  // Browse for export folder
+  const handleBrowseExportFolder = async () => {
+    try {
+      const folder = await BrowseFolder(exportPath || null);
+      if (folder) {
+        setExportPath(folder);
+      }
+    } catch (err) {
+      console.error('Failed to browse folder:', err);
+    }
+  };
+  
+  // Perform export
+  const handleExport = async () => {
+    if (!exportPath) {
+      setError(t('Please select an export folder'));
+      return;
+    }
+    
+    setIsExporting(true);
+    try {
+      const resultPath = await ExportModsToFolder(currentBranch, currentVersion, exportPath, exportType);
+      if (resultPath) {
+        setError(null);
+        setShowExportModal(false);
+        setImportProgress(
+          exportType === 'zip' 
+            ? t('Mods exported as ZIP to {{path}}').replace('{{path}}', resultPath)
+            : t('Mod list exported to {{path}}').replace('{{path}}', resultPath)
+        );
+        setTimeout(() => setImportProgress(null), 4000);
+      } else {
+        setError(exportType === 'zip' ? t('No mod files to export') : t('No CurseForge mods to export'));
+      }
+    } catch (err: any) {
+      setError(err?.message || t('Failed to export mods'));
+    } finally {
+      setIsExporting(false);
+    }
+  };
+  
+  // Handle drag and drop
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
+  };
+  
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    // Only set false if leaving the drop zone entirely
+    if (e.currentTarget === e.target) {
+      setIsDragging(false);
+    }
+  };
+  
+  const handleDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+    
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length === 0) return;
+    
+    setIsImporting(true);
+    let successCount = 0;
+    let modListImported = false;
+    
+    try {
+      for (const file of files) {
+        const filePath = (file as any).path;
+        if (!filePath) {
+          setError(t('Cannot access file path. Drag files from your file manager.'));
+          continue;
+        }
+        
+        // Check if it's a mod list JSON file
+        if (file.name.endsWith('.json') && (file.name.includes('ModList') || file.name.includes('modlist'))) {
+          setImportProgress(t('Importing mod list...'));
+          const count = await ImportModList(filePath, currentBranch, currentVersion);
+          if (count > 0) {
+            successCount += count;
+            modListImported = true;
+          }
+        }
+        // Accept any mod file (JAR, ZIP, etc.)
+        else {
+          setImportProgress(t('Installing {{name}}...').replace('{{name}}', file.name));
+          const success = await InstallLocalModFile(filePath, currentBranch, currentVersion);
+          if (success) {
+            successCount++;
+          }
+        }
+      }
+      
+      if (successCount > 0) {
+        await loadInstalledMods();
+        setImportProgress(
+          modListImported 
+            ? t('Imported {{count}} mods').replace('{{count}}', successCount.toString())
+            : t('Installed {{count}} mod(s)').replace('{{count}}', successCount.toString())
+        );
+        setTimeout(() => setImportProgress(null), 3000);
+      } else {
+        setError(t('Failed to install mods. Please try again.'));
+      }
+    } catch (err: any) {
+      setError(err?.message || t('Failed to import mods'));
+    } finally {
+      setIsImporting(false);
+    }
+  };
 
   const getCategoryName = () => {
     if (selectedCategory === 0) return t('All');
@@ -730,8 +928,41 @@ export const ModManager: React.FC<ModManagerProps> = ({
   ) : [];
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-8">
-      <div className="w-full max-w-6xl h-[85vh] bg-[#1a1a1a] rounded-2xl border border-white/10 flex flex-col overflow-hidden">
+    <div 
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-8"
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
+      <div className={`w-full max-w-6xl h-[85vh] bg-[#1a1a1a] rounded-2xl border flex flex-col overflow-hidden transition-colors ${isDragging ? 'border-2' : 'border-white/10'}`} style={isDragging ? { borderColor: accentColor } : undefined}>
+        {/* Drag overlay */}
+        {isDragging && (
+          <div className="absolute inset-0 z-[100] flex items-center justify-center bg-black/80 rounded-2xl pointer-events-none">
+            <div className="text-center">
+              <Upload size={64} className="mx-auto mb-4" style={{ color: accentColor }} />
+              <p className="text-white text-xl font-bold">{t('Drop mods here')}</p>
+              <p className="text-white/60 mt-2">{t('Drag mod files or a mod list')}</p>
+            </div>
+          </div>
+        )}
+        
+        {/* Import progress overlay */}
+        {isImporting && (
+          <div className="absolute inset-0 z-[100] flex items-center justify-center bg-black/80 rounded-2xl">
+            <div className="text-center">
+              <Loader2 size={48} className="mx-auto mb-4 animate-spin" style={{ color: accentColor }} />
+              <p className="text-white text-lg">{importProgress || t('Importing...')}</p>
+            </div>
+          </div>
+        )}
+        
+        {/* Success/info message */}
+        {importProgress && !isImporting && (
+          <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[100] px-4 py-2 rounded-xl text-white text-sm" style={{ backgroundColor: accentColor }}>
+            {importProgress}
+          </div>
+        )}
+        
         {/* Header */}
         <div className="p-4 border-b border-white/10 flex items-center justify-between flex-shrink-0">
           {/* Left side - Instance info */}
@@ -745,10 +976,18 @@ export const ModManager: React.FC<ModManagerProps> = ({
             <button
               onClick={handleCheckUpdates}
               disabled={isLoadingUpdates || isDownloading}
-              className="p-2 rounded-xl hover:bg-white/10 text-green-400 hover:text-green-300 disabled:opacity-50"
-              title={t('Check for updates')}
+              className="p-2 rounded-xl hover:bg-white/10 text-green-400 hover:text-green-300 disabled:opacity-50 relative"
+              title={updateCount > 0 ? t('{{count}} updates available').replace('{{count}}', updateCount.toString()) : t('Check for updates')}
             >
               <RefreshCw size={20} className={isLoadingUpdates ? 'animate-spin' : ''} />
+              {updateCount > 0 && !isLoadingUpdates && (
+                <span 
+                  className="absolute -top-1 -right-1 min-w-[18px] h-[18px] flex items-center justify-center text-xs font-bold rounded-full"
+                  style={{ backgroundColor: accentColor, color: accentTextColor }}
+                >
+                  {updateCount > 99 ? '99+' : updateCount}
+                </span>
+              )}
             </button>
             <button
               onClick={(activeTab === 'browse' && selectedBrowseMods.size > 0) || (activeTab === 'installed' && selectedInstalledMods.size > 0) ? showDownloadConfirmation : undefined}
@@ -778,6 +1017,14 @@ export const ModManager: React.FC<ModManagerProps> = ({
               title={(selectedInstalledMods.size > 0 || highlightedInstalledMods.size > 0) ? t(`Delete {{count}} mod(s)`).replace('{{count}}', (selectedInstalledMods.size + highlightedInstalledMods.size).toString()) : t('Select mods to delete')}
             >
               <Trash2 size={20} />
+            </button>
+            <button
+              onClick={handleOpenExportModal}
+              disabled={installedMods.length === 0}
+              className={`p-2 rounded-xl hover:bg-white/10 ${installedMods.length > 0 ? 'text-white/60 hover:text-white' : 'text-white/20 cursor-not-allowed'}`}
+              title={t('Export Mods')}
+            >
+              <Share size={20} />
             </button>
             <button
               onClick={handleOpenFolder}
@@ -1003,7 +1250,7 @@ export const ModManager: React.FC<ModManagerProps> = ({
                             style={isSelected ? { backgroundColor: accentColor, borderColor: accentColor } : undefined}
                             title={isSelected ? t('Selected') : t('Select (Shift+click for range)')}
                           >
-                            {isSelected && <Check size={12} className="text-white" />}
+                            {isSelected && <Check size={12} style={{ color: accentTextColor }} />}
                           </button>
 
                           {/* Icon */}
@@ -1123,7 +1370,7 @@ export const ModManager: React.FC<ModManagerProps> = ({
                             style={isSelected ? { backgroundColor: accentColor, borderColor: accentColor } : undefined}
                             title={isSelected ? t('Selected for download') : t('Select for download (Shift+click for range)')}
                           >
-                            {isSelected && <Check size={12} className="text-white" />}
+                            {isSelected && <Check size={12} style={{ color: accentTextColor }} />}
                           </button>
 
                           {/* Logo */}
@@ -1358,10 +1605,10 @@ export const ModManager: React.FC<ModManagerProps> = ({
                         }
                       }}
                       className={`w-full py-3 rounded-xl text-sm font-medium ${selectedInstalledMods.has((selectedMod as Mod).id) || highlightedInstalledMods.size > 0
-                        ? 'text-white'
+                        ? ''
                         : 'bg-white/10 text-white hover:bg-white/20'
                         }`}
-                      style={selectedInstalledMods.has((selectedMod as Mod).id) || highlightedInstalledMods.size > 0 ? { backgroundColor: accentColor } : undefined}
+                      style={selectedInstalledMods.has((selectedMod as Mod).id) || highlightedInstalledMods.size > 0 ? { backgroundColor: accentColor, color: accentTextColor } : undefined}
                     >
                       {highlightedInstalledMods.size > 0
                         ? (() => {
@@ -1431,10 +1678,10 @@ export const ModManager: React.FC<ModManagerProps> = ({
                         }
                       }}
                       className={`w-full py-3 rounded-xl text-sm font-medium ${selectedBrowseMods.has((selectedMod as CurseForgeMod).id) || highlightedBrowseMods.size > 0
-                        ? 'text-white'
+                        ? ''
                         : 'bg-white/10 text-white hover:bg-white/20'
                         }`}
-                      style={selectedBrowseMods.has((selectedMod as CurseForgeMod).id) || highlightedBrowseMods.size > 0 ? { backgroundColor: accentColor } : undefined}
+                      style={selectedBrowseMods.has((selectedMod as CurseForgeMod).id) || highlightedBrowseMods.size > 0 ? { backgroundColor: accentColor, color: accentTextColor } : undefined}
                     >
                       {highlightedBrowseMods.size > 0
                         ? (() => {
@@ -1588,6 +1835,7 @@ export const ModManager: React.FC<ModManagerProps> = ({
           confirmText={confirmModal.type === 'download' ? t('Download') : t('Delete')}
           confirmColor={confirmModal.type === 'download' ? 'hover:opacity-90' : 'bg-red-500 hover:bg-red-600'}
           confirmStyle={confirmModal.type === 'download' ? { backgroundColor: accentColor } : undefined}
+          confirmTextColor={confirmModal.type === 'download' ? accentTextColor : undefined}
           onConfirm={confirmModal.type === 'download' ? handleConfirmDownload : handleConfirmDelete}
           onCancel={() => setConfirmModal(null)}
         >
@@ -1675,6 +1923,97 @@ export const ModManager: React.FC<ModManagerProps> = ({
                 {t('Click anywhere to close')}
               </span>
             </div>
+        </div>
+      )}
+
+      {/* Export Modal */}
+      {showExportModal && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-[60]">
+          <div className="bg-[#1a1a1a] rounded-2xl border border-white/10 p-6 w-full max-w-md">
+            <div className="flex items-center justify-between mb-6">
+              <h3 className="text-xl font-bold text-white">{t('Export Mods')}</h3>
+              <button
+                onClick={() => setShowExportModal(false)}
+                className="p-2 rounded-xl hover:bg-white/10 text-white/60 hover:text-white"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            {/* Export Type */}
+            <div className="mb-4">
+              <label className="block text-white/60 text-sm mb-2">{t('Export Type')}</label>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setExportType('modlist')}
+                  className={`flex-1 p-3 rounded-xl border transition-colors ${
+                    exportType === 'modlist'
+                      ? 'border-2'
+                      : 'border-white/10 hover:border-white/20'
+                  }`}
+                  style={exportType === 'modlist' ? { borderColor: accentColor, backgroundColor: `${accentColor}20` } : undefined}
+                >
+                  <FileText size={20} className="mx-auto mb-1" style={exportType === 'modlist' ? { color: accentColor } : { color: 'rgba(255,255,255,0.6)' }} />
+                  <div className="text-sm text-white font-medium">{t('Mod List')}</div>
+                  <div className="text-xs text-white/40">{t('JSON file for re-downloading')}</div>
+                </button>
+                <button
+                  onClick={() => setExportType('zip')}
+                  className={`flex-1 p-3 rounded-xl border transition-colors ${
+                    exportType === 'zip'
+                      ? 'border-2'
+                      : 'border-white/10 hover:border-white/20'
+                  }`}
+                  style={exportType === 'zip' ? { borderColor: accentColor, backgroundColor: `${accentColor}20` } : undefined}
+                >
+                  <Package size={20} className="mx-auto mb-1" style={exportType === 'zip' ? { color: accentColor } : { color: 'rgba(255,255,255,0.6)' }} />
+                  <div className="text-sm text-white font-medium">{t('ZIP Archive')}</div>
+                  <div className="text-xs text-white/40">{t('All mod files bundled')}</div>
+                </button>
+              </div>
+            </div>
+
+            {/* Export Folder */}
+            <div className="mb-6">
+              <label className="block text-white/60 text-sm mb-2">{t('Export Folder')}</label>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={exportPath}
+                  onChange={(e) => setExportPath(e.target.value)}
+                  placeholder={t('Select export folder...')}
+                  className="flex-1 px-4 py-2 bg-[#252525] border border-white/10 rounded-xl text-white placeholder-white/40 focus:outline-none focus:border-white/30"
+                />
+                <button
+                  onClick={handleBrowseExportFolder}
+                  className="px-4 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-white transition-colors"
+                >
+                  <FolderOpen size={20} />
+                </button>
+              </div>
+            </div>
+
+            {/* Export Button */}
+            <button
+              onClick={handleExport}
+              disabled={isExporting || !exportPath}
+              className={`w-full py-3 rounded-xl font-bold text-lg transition-all ${
+                isExporting || !exportPath
+                  ? 'bg-white/10 text-white/40 cursor-not-allowed'
+                  : 'hover:opacity-90'
+              }`}
+              style={!isExporting && exportPath ? { backgroundColor: accentColor, color: accentTextColor } : undefined}
+            >
+              {isExporting ? (
+                <span className="flex items-center justify-center gap-2">
+                  <Loader2 size={20} className="animate-spin" />
+                  {t('Exporting...')}
+                </span>
+              ) : (
+                t('Export')
+              )}
+            </button>
+          </div>
         </div>
       )}
     </div>

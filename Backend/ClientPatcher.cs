@@ -11,7 +11,6 @@ namespace HyPrism.Backend;
 
 /// <summary>
 /// Patches the HytaleClient binary to replace hytale.com domain references
-/// with a custom F2P auth server domain. The target domain MUST be exactly
 /// 10 characters (same as hytale.com) for direct replacement to work.
 /// Example: hytale.com -> sanasol.ws
 /// This allows the game to connect to custom authentication servers.
@@ -35,6 +34,80 @@ public class ClientPatcher
         {
             Logger.Warning("Patcher", $"Domain '{_targetDomain}' length {_targetDomain.Length} outside bounds ({MinDomainLength}-{MaxDomainLength}), using default");
             _targetDomain = DefaultNewDomain;
+        }
+    }
+
+    /// <summary>
+    /// Get the flag file path for tracking patch status.
+    /// On macOS, stores outside the app bundle to avoid breaking code signature.
+    /// </summary>
+    private static string GetFlagFilePath(string clientPath)
+    {
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+        {
+            // Store flag file outside the app bundle
+            // e.g., /path/to/Client/Hytale.app/Contents/MacOS/HytaleClient -> /path/to/Client/HytaleClient.patched_custom
+            string fileName = Path.GetFileName(clientPath);
+            string clientDir = Path.GetDirectoryName(Path.GetDirectoryName(Path.GetDirectoryName(Path.GetDirectoryName(clientPath)!)!)!)!;
+            return Path.Combine(clientDir, fileName + PatchedFlag);
+        }
+        return clientPath + PatchedFlag;
+    }
+
+    /// <summary>
+    /// Get the backup file path for the original binary.
+    /// On macOS, stores outside the app bundle to avoid breaking code signature.
+    /// </summary>
+    private static string GetBackupFilePath(string clientPath)
+    {
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+        {
+            // Store backup file outside the app bundle
+            string fileName = Path.GetFileName(clientPath);
+            string clientDir = Path.GetDirectoryName(Path.GetDirectoryName(Path.GetDirectoryName(Path.GetDirectoryName(clientPath)!)!)!)!;
+            return Path.Combine(clientDir, fileName + ".original");
+        }
+        return clientPath + ".original";
+    }
+
+    /// <summary>
+    /// Clean up old flag/backup files that were incorrectly placed inside the app bundle.
+    /// This is needed for migration from old patching behavior.
+    /// </summary>
+    private static void CleanupLegacyFiles(string clientPath)
+    {
+        if (!RuntimeInformation.IsOSPlatform(OSPlatform.OSX)) return;
+
+        try
+        {
+            // Remove old files inside the app bundle
+            string oldFlagFile = clientPath + PatchedFlag;
+            string oldBackupFile = clientPath + ".original";
+
+            if (File.Exists(oldFlagFile))
+            {
+                File.Delete(oldFlagFile);
+                Logger.Info("Patcher", "Removed legacy flag file from inside app bundle");
+            }
+            if (File.Exists(oldBackupFile))
+            {
+                // Move to new location instead of deleting
+                string newBackupPath = GetBackupFilePath(clientPath);
+                if (!File.Exists(newBackupPath))
+                {
+                    File.Move(oldBackupFile, newBackupPath);
+                    Logger.Info("Patcher", "Moved legacy backup file outside app bundle");
+                }
+                else
+                {
+                    File.Delete(oldBackupFile);
+                    Logger.Info("Patcher", "Removed duplicate legacy backup file from app bundle");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Warning("Patcher", $"Error cleaning up legacy files: {ex.Message}");
         }
     }
 
@@ -152,15 +225,20 @@ public class ClientPatcher
     /// </summary>
     public bool IsPatchedAlready(string clientPath)
     {
-        string flagFile = clientPath + PatchedFlag;
-        if (!File.Exists(flagFile))
+        string flagFile = GetFlagFilePath(clientPath);
+        
+        // Also check legacy location for migration purposes
+        string legacyFlagFile = clientPath + PatchedFlag;
+        string actualFlagFile = File.Exists(flagFile) ? flagFile : (File.Exists(legacyFlagFile) ? legacyFlagFile : null!);
+        
+        if (actualFlagFile == null)
         {
             return false;
         }
 
         try
         {
-            string flagContent = File.ReadAllText(flagFile);
+            string flagContent = File.ReadAllText(actualFlagFile);
             var flagData = JsonSerializer.Deserialize<Dictionary<string, object>>(flagContent);
             if (flagData != null && flagData.TryGetValue("targetDomain", out var targetDomainObj))
             {
@@ -197,7 +275,7 @@ public class ClientPatcher
     /// </summary>
     private void MarkAsPatched(string clientPath)
     {
-        string flagFile = clientPath + PatchedFlag;
+        string flagFile = GetFlagFilePath(clientPath);
         var (mode, mainDomain, subdomainPrefix) = GetDomainStrategy();
 
         var flagData = new Dictionary<string, object>
@@ -208,18 +286,19 @@ public class ClientPatcher
             ["patchMode"] = mode,
             ["mainDomain"] = mainDomain,
             ["subdomainPrefix"] = subdomainPrefix,
-            ["patcherVersion"] = "1.0.0"
+            ["patcherVersion"] = "1.2.0"
         };
 
         File.WriteAllText(flagFile, JsonSerializer.Serialize(flagData, new JsonSerializerOptions { WriteIndented = true }));
     }
 
     /// <summary>
-    /// Create a backup of the original client binary
+    /// Create a backup of the original client binary.
+    /// On macOS, stores outside the app bundle to preserve code signature.
     /// </summary>
     private static void BackupClient(string clientPath)
     {
-        string backupPath = clientPath + ".original";
+        string backupPath = GetBackupFilePath(clientPath);
         if (!File.Exists(backupPath))
         {
             File.Copy(clientPath, backupPath);
@@ -296,7 +375,7 @@ public class ClientPatcher
     private static int PatchDiscordUrl(byte[] data)
     {
         string oldUrl = ".gg/hytale";
-        string newUrl = ".gg/MHkEjepMQ7"; // F2P Discord
+        string newUrl = ".gg/MHkEjepMQ7"; // HyPrism Discord
 
         // Try length-prefixed format
         byte[] oldBytes = StringToLengthPrefixed(oldUrl);
@@ -331,6 +410,9 @@ public class ClientPatcher
             Logger.Error("Patcher", error);
             return new PatchResult { Success = false, Error = error };
         }
+
+        // Clean up legacy flag/backup files that were incorrectly placed inside the app bundle
+        CleanupLegacyFiles(clientPath);
 
         if (IsPatchedAlready(clientPath))
         {
@@ -576,7 +658,7 @@ public class ClientPatcher
     /// <summary>
     /// Patch the HytaleServer.jar to use custom auth domain.
     /// The server JAR contains sessions.hytale.com which needs to be changed to sessions.sanasol.ws
-    /// for JWT validation to work with the F2P auth server.
+    /// for JWT validation to work with the custom auth server.
     /// JAR files are ZIP archives with compressed class files, so we need to extract, patch, and re-archive.
     /// </summary>
     public PatchResult PatchServerJar(string gameDir, Action<string, int?>? progressCallback = null)

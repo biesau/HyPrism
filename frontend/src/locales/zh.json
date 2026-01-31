@@ -127,5 +127,20 @@
     "Offline Mode": "离线模式",
     "Online Mode (Click to disable)": "在线模式（点击禁用）",
     "Offline Mode (Click to enable online)": "离线模式（点击启用在线）",
-    "Report Issue": "报告问题"
+    "Report Issue": "报告问题",
+    "Saved Profiles": "已保存的配置文件",
+    "Save Current Profile": "保存当前配置",
+    "Create New Profile": "创建新配置",
+    "Delete Profile": "删除配置",
+    "Profile name...": "配置名称...",
+    "No saved profiles yet": "暂无已保存的配置",
+    "Profile saved!": "配置已保存！",
+    "Profile Editor": "配置编辑器",
+    "Your player avatar": "你的玩家头像",
+    "Edit Username": "编辑用户名",
+    "Player UUID": "玩家UUID",
+    "Copy UUID": "复制UUID",
+    "Edit UUID": "编辑UUID",
+    "Generate Random UUID": "生成随机UUID",
+    "Save UUID": "保存UUID"
 }

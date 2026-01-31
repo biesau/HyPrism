@@ -202,6 +202,18 @@ class Program
                         "GetLauncherVersion" => app.GetLauncherVersion(),
                         "GetUUID" => app.GetUUID(),
                         "SetUUID" => app.SetUUID(GetArg<string>(request.Args, 0)),
+                        "GetAvatarPreview" => app.GetAvatarPreview(),
+                        "ClearAvatarCache" => app.ClearAvatarCache(),
+                        
+                        // Profile Management
+                        "GetProfiles" => app.GetProfiles(),
+                        "GetActiveProfileIndex" => app.GetActiveProfileIndex(),
+                        "CreateProfile" => app.CreateProfile(GetArg<string>(request.Args, 0), GetArg<string>(request.Args, 1)),
+                        "DeleteProfile" => app.DeleteProfile(GetArg<string>(request.Args, 0)),
+                        "SwitchProfile" => app.SwitchProfile(GetArg<int>(request.Args, 0)),
+                        "UpdateProfile" => app.UpdateProfile(GetArg<string>(request.Args, 0), GetArg<string>(request.Args, 1), GetArg<string>(request.Args, 2)),
+                        "SaveCurrentAsProfile" => app.SaveCurrentAsProfile(),
+                        
                         "GetCustomInstanceDir" => app.GetCustomInstanceDir(),
                         "SetInstanceDirectory" => await app.SetInstanceDirectoryAsync(GetArg<string>(request.Args, 0)),
                         
@@ -282,6 +294,27 @@ class Program
                         "CheckInstanceModUpdates" => await app.CheckInstanceModUpdatesAsync(
                             GetArg<string>(request.Args, 0),
                             GetArg<int>(request.Args, 1)),
+                        "InstallLocalModFile" => await app.InstallLocalModFile(
+                            GetArg<string>(request.Args, 0),
+                            GetArg<string>(request.Args, 1),
+                            GetArg<int>(request.Args, 2)),
+                        "ExportModList" => app.ExportModList(
+                            GetArg<string>(request.Args, 0),
+                            GetArg<int>(request.Args, 1)),
+                        "ExportModsToFolder" => await app.ExportModsToFolder(
+                            GetArg<string>(request.Args, 0),
+                            GetArg<int>(request.Args, 1),
+                            GetArg<string>(request.Args, 2),
+                            GetArg<string>(request.Args, 3)),
+                        "GetLastExportPath" => app.GetLastExportPath(),
+                        "ImportModList" => await app.ImportModList(
+                            GetArg<string>(request.Args, 0),
+                            GetArg<string>(request.Args, 1),
+                            GetArg<int>(request.Args, 2)),
+                        "GetInstalledVersionsDetailed" => app.GetInstalledVersionsDetailed(),
+                        "ExportInstance" => app.ExportInstance(
+                            GetArg<string>(request.Args, 0),
+                            GetArg<int>(request.Args, 1)),
                         
                         // Settings
                         "GetLauncherBranch" => app.GetLauncherBranch(),
@@ -326,11 +359,9 @@ class Program
                         "GetAuthDomain" => app.GetAuthDomain(),
                         "SetAuthDomain" => app.SetAuthDomain(GetArg<string>(request.Args, 0)),
                         
-                        // Skin configuration
-                        "GetSkinConfig" => app.GetSkinConfig(),
-                        "SaveSkinConfig" => app.SaveSkinConfig(GetArg<SkinConfig>(request.Args, 0)),
-                        "GetInstanceSkinConfig" => app.GetInstanceSkinConfig(GetArg<string>(request.Args, 0), GetArg<int>(request.Args, 1)),
-                        "ApplySkinToInstance" => app.ApplySkinToInstance(GetArg<string>(request.Args, 0), GetArg<int>(request.Args, 1)),
+                        // Game Language
+                        "SetGameLanguage" => await app.SetGameLanguageAsync(GetArg<string>(request.Args, 0)),
+                        "GetAvailableGameLanguages" => app.GetAvailableGameLanguages(),
                         
                         // Discord
                         "GetDiscordAnnouncement" => await app.GetDiscordAnnouncementAsync(),

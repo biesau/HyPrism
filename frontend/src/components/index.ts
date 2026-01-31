@@ -10,4 +10,4 @@ export { ModManager } from './ModManager';
 export { LogsModal } from './LogsModal';
 export { SettingsModal } from './SettingsModal';
 export { UpdateConfirmationModal } from './UpdateConfirmationModal';
-export { ProfileEditor, SkinEditor } from './ProfileEditor';
+export { ProfileEditor } from './ProfileEditor';

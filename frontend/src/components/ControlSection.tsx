@@ -3,7 +3,6 @@ import { useTranslation } from 'react-i18next';
 import { FolderOpen, Play, Package, Square, Settings, Loader2, Download, ChevronDown, Check, X, GitBranch } from 'lucide-react';
 import { CoffeeIcon } from './CoffeeIcon';
 import { OnlineToggle } from './OnlineToggle';
-import { LanguageSelector } from './LanguageSelector';
 import { BrowserOpenURL } from '../../wailsjs/runtime/runtime';
 import { GameBranch } from '../constants/enums';
 import { useAccentColor } from '../contexts/AccentColorContext';
@@ -92,7 +91,7 @@ export const ControlSection: React.FC<ControlSectionProps> = memo(({
   const branchDropdownRef = useRef<HTMLDivElement>(null);
   const versionDropdownRef = useRef<HTMLDivElement>(null);
   const { t } = useTranslation();
-  const { accentColor } = useAccentColor();
+  const { accentColor, accentTextColor } = useAccentColor();
 
   const openCoffee = () => BrowserOpenURL('https://buymeacoffee.com/yyyumeniku');
 
@@ -141,9 +140,8 @@ export const ControlSection: React.FC<ControlSectionProps> = memo(({
       ? t('Pre-Release')
       : t('Release');
 
-  // Calculate width to match the 4 nav buttons (w-12 = 48px each, gap-2 = 8px)
-  // 4 buttons * 48px + 3 gaps * 8px = 216px
-  const selectorWidth = 'w-[216px]';
+  // Use auto width to accommodate different translation lengths
+  // min-w ensures it doesn't get too small
 
   const versionButtonStyle: React.CSSProperties = {};
   if (isVersionOpen) {
@@ -153,8 +151,8 @@ export const ControlSection: React.FC<ControlSectionProps> = memo(({
 
   return (
     <div className="flex flex-col gap-3">
-      {/* Row 1: Version Selector - spans width of nav buttons below */}
-      <div className={`${selectorWidth} h-12 rounded-xl glass border border-white/5 flex items-center`}>
+      {/* Row 1: Version Selector - auto width to fit content */}
+      <div className="h-12 rounded-xl glass border border-white/5 flex items-center w-fit min-w-[180px]">
         {/* Branch Dropdown (Left side) */}
         <div ref={branchDropdownRef} className="relative h-full flex-1">
           <button
@@ -187,10 +185,23 @@ export const ControlSection: React.FC<ControlSectionProps> = memo(({
                 <button
                   key={branch}
                   onClick={() => handleBranchSelect(branch)}
-                  className={`w-full px-3 py-2 flex items-center gap-2 text-sm rounded-lg ${currentBranch === branch
-                    ? 'bg-white/20 text-white'
-                    : 'text-white/70 hover:bg-white/10 hover:text-white'
-                    }`}
+                  className={`w-full px-3 py-2 flex items-center gap-2 text-sm rounded-lg transition-colors`}
+                  style={currentBranch === branch
+                    ? { backgroundColor: `${accentColor}33`, color: 'white' }
+                    : undefined
+                  }
+                  onMouseEnter={(e) => {
+                    if (currentBranch !== branch) {
+                      e.currentTarget.style.backgroundColor = `${accentColor}1a`;
+                      e.currentTarget.style.color = accentColor;
+                    }
+                  }}
+                  onMouseLeave={(e) => {
+                    if (currentBranch !== branch) {
+                      e.currentTarget.style.backgroundColor = '';
+                      e.currentTarget.style.color = '';
+                    }
+                  }}
                 >
                   {currentBranch === branch && <Check size={14} className="text-white" strokeWidth={3} />}
                   <span className={currentBranch === branch ? '' : 'ml-[22px]'}>
@@ -280,11 +291,6 @@ export const ControlSection: React.FC<ControlSectionProps> = memo(({
         <NavBtn onClick={actions.openFolder} icon={<FolderOpen size={18} />} tooltip={t('Open Instance Folder')} accentColor={accentColor} />
         <NavBtn onClick={onOpenSettings} icon={<Settings size={18} />} tooltip={t('Settings')} accentColor={accentColor} />
         <OnlineToggle accentColor={accentColor} />
-        <LanguageSelector 
-          currentBranch={currentBranch} 
-          currentVersion={currentVersion} 
-          onShowModManager={(query) => actions.showModManager(query)} 
-        />
         <button
           tabIndex={-1}
           onClick={openCoffee}
@@ -358,10 +364,11 @@ export const ControlSection: React.FC<ControlSectionProps> = memo(({
             <button
               tabIndex={-1}
               onClick={onPlay}
-              className="h-12 px-6 rounded-xl font-black text-lg tracking-tight flex items-center justify-center gap-2 text-white hover:shadow-lg hover:scale-[1.02] active:scale-[0.98] transition-all duration-150 cursor-pointer"
+              className="h-12 px-6 rounded-xl font-black text-lg tracking-tight flex items-center justify-center gap-2 hover:shadow-lg hover:scale-[1.02] active:scale-[0.98] transition-all duration-150 cursor-pointer"
               style={{ 
                 background: `linear-gradient(to right, ${accentColor}, ${accentColor}cc)`,
-                boxShadow: `0 10px 15px -3px ${accentColor}40`
+                boxShadow: `0 10px 15px -3px ${accentColor}40`,
+                color: accentTextColor
               }}
             >
               <Play size={18} fill="currentColor" />

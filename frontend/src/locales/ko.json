@@ -127,5 +127,20 @@
     "Offline Mode": "오프라인 모드",
     "Online Mode (Click to disable)": "온라인 모드 (클릭하여 비활성화)",
     "Offline Mode (Click to enable online)": "오프라인 모드 (클릭하여 온라인 활성화)",
-    "Report Issue": "문제 신고"
+    "Report Issue": "문제 신고",
+    "Saved Profiles": "저장된 프로필",
+    "Save Current Profile": "현재 프로필 저장",
+    "Create New Profile": "새 프로필 만들기",
+    "Delete Profile": "프로필 삭제",
+    "Profile name...": "프로필 이름...",
+    "No saved profiles yet": "저장된 프로필이 없습니다",
+    "Profile saved!": "프로필이 저장되었습니다!",
+    "Profile Editor": "프로필 편집기",
+    "Your player avatar": "플레이어 아바타",
+    "Edit Username": "사용자 이름 편집",
+    "Player UUID": "플레이어 UUID",
+    "Copy UUID": "UUID 복사",
+    "Edit UUID": "UUID 편집",
+    "Generate Random UUID": "랜덤 UUID 생성",
+    "Save UUID": "UUID 저장"
 }

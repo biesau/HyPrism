@@ -127,5 +127,20 @@
     "Offline Mode": "Mode hors ligne",
     "Online Mode (Click to disable)": "Mode en ligne (Cliquez pour désactiver)",
     "Offline Mode (Click to enable online)": "Mode hors ligne (Cliquez pour activer en ligne)",
-    "Report Issue": "Signaler un problème"
+    "Report Issue": "Signaler un problème",
+    "Saved Profiles": "Profils Sauvegardés",
+    "Save Current Profile": "Sauvegarder le Profil Actuel",
+    "Create New Profile": "Créer un Nouveau Profil",
+    "Delete Profile": "Supprimer le Profil",
+    "Profile name...": "Nom du profil...",
+    "No saved profiles yet": "Aucun profil sauvegardé",
+    "Profile saved!": "Profil sauvegardé !",
+    "Profile Editor": "Éditeur de Profil",
+    "Your player avatar": "Votre avatar de joueur",
+    "Edit Username": "Modifier le Nom d'Utilisateur",
+    "Player UUID": "UUID du Joueur",
+    "Copy UUID": "Copier l'UUID",
+    "Edit UUID": "Modifier l'UUID",
+    "Generate Random UUID": "Générer un UUID Aléatoire",
+    "Save UUID": "Sauvegarder l'UUID"
 }

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import { X, Github, Bug, Check, AlertTriangle, ChevronDown, ExternalLink, Power, FolderOpen, Trash2, Settings, Database, Globe, Code, Image, User, Edit3, Shuffle, Copy, CheckCircle, Palette, Monitor } from 'lucide-react';
+import { X, Github, Bug, Check, AlertTriangle, ChevronDown, ExternalLink, Power, FolderOpen, Trash2, Settings, Database, Globe, Code, Image, User, Edit3, Shuffle, Copy, CheckCircle, Monitor, Download, Archive, Loader2, HardDrive, Languages } from 'lucide-react';
 import { BrowserOpenURL } from '../../wailsjs/runtime/runtime';
 import { 
     GetCloseAfterLaunch, 
@@ -23,14 +23,20 @@ import {
     SetNick,
     GetUUID,
     SetUUID,
-    GetAuthDomain
+    GetAuthDomain,
+    GetInstalledVersionsDetailed,
+    ExportInstance,
+    DeleteGame,
+    OpenInstanceFolder,
+    GetAvatarPreview,
+    SetGameLanguage
 } from '../../wailsjs/go/app/App';
+import type { InstalledVersionInfo } from '../../wailsjs/go/app/App';
 import { useAccentColor } from '../contexts/AccentColorContext';
 import { DiscordIcon } from './DiscordIcon';
 import { Language } from '../constants/enums';
 import { LANGUAGE_CONFIG } from '../constants/languages';
 import appIcon from '../assets/appicon.png';
-import { SkinCustomizer } from './SkinCustomizer';
 
 // Import background images for previews
 const backgroundModulesJpg = import.meta.glob('../assets/bg_*.jpg', { query: '?url', import: 'default', eager: true });
@@ -91,7 +97,7 @@ interface SettingsModalProps {
     onAccentColorChange?: (color: string) => void;
 }
 
-type SettingsTab = 'profile' | 'general' | 'visual' | 'data' | 'about' | 'developer';
+type SettingsTab = 'profile' | 'general' | 'visual' | 'language' | 'data' | 'instances' | 'about' | 'developer';
 
 // Auth server base URL for avatar/skin head
 const DEFAULT_AUTH_DOMAIN = 'sessions.sanasol.ws';
@@ -123,11 +129,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     const [showAllBackgrounds, setShowAllBackgrounds] = useState(false);
     const [launcherDataDir, setLauncherDataDir] = useState('');
     const [disableHardwareAcceleration, setDisableHardwareAcceleration] = useState(false);
-    const { accentColor, setAccentColor: setAccentColorContext } = useAccentColor();
+    const { accentColor, accentTextColor, setAccentColor: setAccentColorContext } = useAccentColor();
     const [contributors, setContributors] = useState<Contributor[]>([]);
     const [isLoadingContributors, setIsLoadingContributors] = useState(false);
     const languageDropdownRef = useRef<HTMLDivElement>(null);
     const branchDropdownRef = useRef<HTMLDivElement>(null);
+    
+    // Instances state
+    const [installedInstances, setInstalledInstances] = useState<InstalledVersionInfo[]>([]);
+    const [isLoadingInstances, setIsLoadingInstances] = useState(false);
+    const [exportingInstance, setExportingInstance] = useState<string | null>(null);
+    const [instanceToDelete, setInstanceToDelete] = useState<InstalledVersionInfo | null>(null);
 
     // Profile state
     const [profileUsername, setProfileUsername] = useState('');
@@ -138,8 +150,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     const [editUuidValue, setEditUuidValue] = useState('');
     const [copiedUuid, setCopiedUuid] = useState(false);
     const [authDomain, setAuthDomain] = useState('sessions.sanasol.ws');
-
-    const [showSkinCustomizer, setShowSkinCustomizer] = useState(false);
+    const [localAvatar, setLocalAvatar] = useState<string | null>(null);
 
     useEffect(() => {
         const loadSettings = async () => {
@@ -180,6 +191,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 const domain = await GetAuthDomain();
                 if (domain) setAuthDomain(domain);
                 
+                // Load local avatar preview
+                try {
+                    const avatar = await GetAvatarPreview();
+                    if (avatar) setLocalAvatar(avatar);
+                } catch { /* ignore */ }
+                
                 // Accent color is now handled by AccentColorContext
                 
                 const savedDevMode = localStorage.getItem('hyprism_dev_mode');
@@ -206,6 +223,60 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 .finally(() => setIsLoadingContributors(false));
         }
     }, [activeTab, contributors.length, isLoadingContributors]);
+    
+    // Load installed instances when Instances tab is active
+    useEffect(() => {
+        if (activeTab === 'instances' && installedInstances.length === 0 && !isLoadingInstances) {
+            loadInstances();
+        }
+    }, [activeTab]);
+    
+    const loadInstances = async () => {
+        setIsLoadingInstances(true);
+        try {
+            const instances = await GetInstalledVersionsDetailed();
+            setInstalledInstances(instances || []);
+        } catch (err) {
+            console.error('Failed to load instances:', err);
+        }
+        setIsLoadingInstances(false);
+    };
+    
+    const handleExportInstance = async (instance: InstalledVersionInfo) => {
+        const key = `${instance.Branch}-${instance.Version}`;
+        setExportingInstance(key);
+        try {
+            const exportPath = await ExportInstance(instance.Branch, instance.Version);
+            if (exportPath) {
+                // Could show a success toast here
+                console.log('Exported to:', exportPath);
+            }
+        } catch (err) {
+            console.error('Failed to export instance:', err);
+        }
+        setExportingInstance(null);
+    };
+    
+    const handleDeleteInstance = async () => {
+        if (!instanceToDelete) return;
+        try {
+            // Ensure Version is a number
+            const version = typeof instanceToDelete.Version === 'number' ? instanceToDelete.Version : parseInt(String(instanceToDelete.Version)) || 0;
+            await DeleteGame(instanceToDelete.Branch, version);
+            await loadInstances();
+        } catch (err) {
+            console.error('Failed to delete instance:', err);
+        }
+        setInstanceToDelete(null);
+    };
+    
+    const formatSize = (bytes: number): string => {
+        if (bytes === 0) return '0 B';
+        const k = 1024;
+        const sizes = ['B', 'KB', 'MB', 'GB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+    };
 
     useEffect(() => {
         const handleClickOutside = (e: MouseEvent) => {
@@ -237,9 +308,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         };
     }, [onClose, showTranslationConfirm, showAllBackgrounds]);
 
-    const handleLanguageSelect = (langCode: Language) => {
+    const handleLanguageSelect = async (langCode: Language) => {
         i18n.changeLanguage(langCode);
         setIsLanguageOpen(false);
+
+        // Update game language files
+        try {
+            await SetGameLanguage(langCode);
+            console.log(`Game language set to: ${langCode}`);
+        } catch (error) {
+            console.warn('Failed to set game language:', error);
+        }
 
         if (localStorage.getItem('suppressTranslationPrompt') === 'true') {
             return;
@@ -365,6 +444,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         onAccentColorChange?.(color);
     };
 
+    const handleLanguageChange = (langCode: Language) => {
+        i18n.changeLanguage(langCode);
+    };
+
     const handleDevModeToggle = () => {
         const newValue = !devModeEnabled;
         setDevModeEnabled(newValue);
@@ -381,7 +464,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         { id: 'profile' as const, icon: User, label: t('Profile') },
         { id: 'general' as const, icon: Settings, label: t('General') },
         { id: 'visual' as const, icon: Image, label: t('Visual') },
+        { id: 'language' as const, icon: Languages, label: t('Language') },
         { id: 'data' as const, icon: Database, label: t('Data') },
+        { id: 'instances' as const, icon: HardDrive, label: t('Instances') },
         { id: 'about' as const, icon: Globe, label: t('About') },
         ...(devModeEnabled ? [{ id: 'developer' as const, icon: Code, label: t('Developer') }] : []),
     ];
@@ -488,7 +573,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                     className={`w-8 h-4 rounded-full flex items-center transition-colors`}
                                     style={{ backgroundColor: devModeEnabled ? accentColor : 'rgba(255,255,255,0.2)' }}
                                 >
-                                    <div className={`w-3 h-3 rounded-full bg-white shadow-md transform transition-transform ${devModeEnabled ? 'translate-x-4' : 'translate-x-0.5'}`} />
+                                    <div 
+                                        className={`w-3 h-3 rounded-full shadow-md transform transition-transform ${devModeEnabled ? 'translate-x-4' : 'translate-x-0.5'}`} 
+                                        style={{ backgroundColor: devModeEnabled ? accentTextColor : 'white' }}
+                                    />
                                 </div>
                             </div>
                         </div>
@@ -541,26 +629,20 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                 <div className="space-y-6">
                                     {/* Profile Picture and Username */}
                                     <div className="flex flex-col items-center gap-4 py-4">
-                                        {/* Skin Head from Auth Server */}
+                                        {/* Avatar - Local or Placeholder */}
                                         <div 
-                                            className="w-24 h-24 rounded-full overflow-hidden border-2 cursor-pointer hover:scale-105 transition-transform bg-[#151515]"
-                                            style={{ borderColor: accentColor }}
-                                            title={t('Your character head from the skin customizer')}
+                                            className="w-24 h-24 rounded-full overflow-hidden border-2 flex items-center justify-center"
+                                            style={{ borderColor: accentColor, backgroundColor: localAvatar ? 'transparent' : `${accentColor}20` }}
+                                            title={t('Your player avatar')}
                                         >
-                                            {profileUuid ? (
-                                                <iframe
-                                                    src={getAvatarHeadUrl(profileUuid)}
-                                                    width="96"
-                                                    height="96"
-                                                    frameBorder="0"
-                                                    className="w-full h-full"
-                                                    title="Player Avatar Head"
-                                                    loading="lazy"
+                                            {localAvatar ? (
+                                                <img
+                                                    src={localAvatar}
+                                                    className="w-full h-full object-cover object-[center_15%]"
+                                                    alt="Player Avatar"
                                                 />
                                             ) : (
-                                                <div className="w-full h-full flex items-center justify-center text-white/30">
-                                                    <User size={40} />
-                                                </div>
+                                                <User size={40} style={{ color: accentColor }} />
                                             )}
                                         </div>
                                         
@@ -608,23 +690,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                                 </>
                                             )}
                                         </div>
-                                    </div>
-
-                                    {/* Skin Customizer Button - Opens In-App */}
-                                    <div className="p-4 rounded-xl bg-[#151515] border border-white/10">
-                                        <label className="block text-sm text-white/60 mb-3">{t('Character Appearance')}</label>
-                                        <p className="text-xs text-white/40 mb-3">
-                                            {t('Customize your character\'s skin, hair, clothes, and accessories.')}
-                                        </p>
-                                        <button
-                                            onClick={() => setShowSkinCustomizer(true)}
-                                            disabled={!profileUuid}
-                                            className="w-full h-12 px-4 rounded-xl flex items-center justify-center gap-2 text-white font-medium transition-all hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
-                                            style={{ backgroundColor: accentColor }}
-                                        >
-                                            <Palette size={18} />
-                                            {t('Open Skin Customizer')}
-                                        </button>
                                     </div>
 
                                     {/* UUID Section */}
@@ -821,7 +886,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                                 className="w-10 h-6 rounded-full flex items-center transition-colors"
                                                 style={{ backgroundColor: closeAfterLaunch ? accentColor : 'rgba(255,255,255,0.2)' }}
                                             >
-                                                <div className={`w-4 h-4 rounded-full bg-white shadow-md transform transition-transform ${closeAfterLaunch ? 'translate-x-5' : 'translate-x-1'}`} />
+                                                <div 
+                                                    className={`w-4 h-4 rounded-full shadow-md transform transition-transform ${closeAfterLaunch ? 'translate-x-5' : 'translate-x-1'}`}
+                                                    style={{ backgroundColor: closeAfterLaunch ? accentTextColor : 'white' }}
+                                                />
                                             </div>
                                         </div>
                                     </div>
@@ -925,7 +993,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                             className="w-10 h-6 rounded-full flex items-center transition-colors"
                                             style={{ backgroundColor: disableNews ? accentColor : 'rgba(255,255,255,0.2)' }}
                                         >
-                                            <div className={`w-4 h-4 rounded-full bg-white shadow-md transform transition-transform ${disableNews ? 'translate-x-5' : 'translate-x-1'}`} />
+                                            <div 
+                                                className={`w-4 h-4 rounded-full shadow-md transform transition-transform ${disableNews ? 'translate-x-5' : 'translate-x-1'}`}
+                                                style={{ backgroundColor: disableNews ? accentTextColor : 'white' }}
+                                            />
                                         </div>
                                     </div>
 
@@ -945,7 +1016,49 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                             className="w-10 h-6 rounded-full flex items-center transition-colors"
                                             style={{ backgroundColor: disableHardwareAcceleration ? accentColor : 'rgba(255,255,255,0.2)' }}
                                         >
-                                            <div className={`w-4 h-4 rounded-full bg-white shadow-md transform transition-transform ${disableHardwareAcceleration ? 'translate-x-5' : 'translate-x-1'}`} />
+                                            <div 
+                                                className={`w-4 h-4 rounded-full shadow-md transform transition-transform ${disableHardwareAcceleration ? 'translate-x-5' : 'translate-x-1'}`}
+                                                style={{ backgroundColor: disableHardwareAcceleration ? accentTextColor : 'white' }}
+                                            />
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* Language Tab */}
+                            {activeTab === 'language' && (
+                                <div className="space-y-6">
+                                    <div>
+                                        <label className="block text-sm text-white/60 mb-3">{t('Select Language')}</label>
+                                        <p className="text-xs text-white/40 mb-4">{t('Choose your preferred language for the launcher interface')}</p>
+                                        
+                                        <div className="grid grid-cols-2 gap-2">
+                                            {Object.values(LANGUAGE_CONFIG).map((lang) => (
+                                                <button
+                                                    key={lang.code}
+                                                    onClick={() => handleLanguageChange(lang.code)}
+                                                    className="p-3 rounded-xl border transition-all text-left"
+                                                    style={{
+                                                        backgroundColor: i18n.language === lang.code ? `${accentColor}20` : '#151515',
+                                                        borderColor: i18n.language === lang.code ? `${accentColor}50` : 'rgba(255,255,255,0.1)'
+                                                    }}
+                                                >
+                                                    <div className="flex items-center gap-3">
+                                                        {i18n.language === lang.code && (
+                                                            <div 
+                                                                className="w-5 h-5 rounded-full flex items-center justify-center"
+                                                                style={{ backgroundColor: accentColor }}
+                                                            >
+                                                                <Check size={12} style={{ color: accentTextColor }} strokeWidth={3} />
+                                                            </div>
+                                                        )}
+                                                        <div className={i18n.language !== lang.code ? 'ml-8' : ''}>
+                                                            <span className="text-white text-sm font-medium block">{lang.nativeName}</span>
+                                                            <span className="text-xs text-white/40">{lang.name}</span>
+                                                        </div>
+                                                    </div>
+                                                </button>
+                                            ))}
                                         </div>
                                     </div>
                                 </div>
@@ -1036,6 +1149,86 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                             <Trash2 size={18} />
                                             <span>{t('Delete All Launcher Data')}</span>
                                         </button>
+                                    </div>
+                                </div>
+                            )}
+                            
+                            {/* Instances Tab */}
+                            {activeTab === 'instances' && (
+                                <div className="space-y-6">
+                                    <div>
+                                        <div className="flex items-center justify-between mb-3">
+                                            <label className="text-sm text-white/60">{t('Installed Instances')}</label>
+                                            <button
+                                                onClick={loadInstances}
+                                                className="text-xs text-white/40 hover:text-white/60"
+                                                title={t('Refresh')}
+                                            >
+                                                {t('Refresh')}
+                                            </button>
+                                        </div>
+                                        {isLoadingInstances ? (
+                                            <div className="flex items-center justify-center py-8">
+                                                <Loader2 size={24} className="animate-spin" style={{ color: accentColor }} />
+                                            </div>
+                                        ) : installedInstances.length === 0 ? (
+                                            <div className="py-8 text-center text-white/40 text-sm">
+                                                {t('No instances installed')}
+                                            </div>
+                                        ) : (
+                                            <div className="space-y-2">
+                                                {installedInstances.map((instance) => {
+                                                    const key = `${instance.Branch}-${instance.Version}`;
+                                                    const versionLabel = instance.Version === 0 || instance.Version === undefined ? t('latest') : `v${instance.Version}`;
+                                                    const branchLabel = instance.Branch === 'release' ? t('Release') : t('Pre-Release');
+                                                    const isExporting = exportingInstance === key;
+                                                    
+                                                    return (
+                                                        <div key={key} className="p-3 rounded-xl bg-[#151515] border border-white/10 flex items-center gap-3">
+                                                            <Archive size={18} className="text-white/40 flex-shrink-0" />
+                                                            <div className="flex-1 min-w-0">
+                                                                <div className="text-white text-sm font-medium">
+                                                                    {branchLabel} {versionLabel}
+                                                                </div>
+                                                                {instance.HasUserData && (
+                                                                    <div className="text-white/40 text-xs">
+                                                                        {t('UserData')}: {formatSize(instance.UserDataSize)}
+                                                                    </div>
+                                                                )}
+                                                            </div>
+                                                            <div className="flex items-center gap-1">
+                                                                <button
+                                                                    onClick={() => OpenInstanceFolder(instance.Branch, instance.Version ?? 0)}
+                                                                    className="p-2 rounded-lg hover:bg-white/10 text-white/40 hover:text-white"
+                                                                    title={t('Open Folder')}
+                                                                >
+                                                                    <FolderOpen size={16} />
+                                                                </button>
+                                                                <button
+                                                                    onClick={() => handleExportInstance(instance)}
+                                                                    disabled={isExporting || !instance.HasUserData}
+                                                                    className={`p-2 rounded-lg hover:bg-white/10 ${instance.HasUserData ? 'text-white/40 hover:text-white' : 'text-white/20 cursor-not-allowed'}`}
+                                                                    title={t('Export as ZIP')}
+                                                                >
+                                                                    {isExporting ? (
+                                                                        <Loader2 size={16} className="animate-spin" />
+                                                                    ) : (
+                                                                        <Download size={16} />
+                                                                    )}
+                                                                </button>
+                                                                <button
+                                                                    onClick={() => setInstanceToDelete(instance)}
+                                                                    className="p-2 rounded-lg hover:bg-red-500/10 text-white/40 hover:text-red-400"
+                                                                    title={t('Delete Instance')}
+                                                                >
+                                                                    <Trash2 size={16} />
+                                                                </button>
+                                                            </div>
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+                                        )}
                                     </div>
                                 </div>
                             )}
@@ -1210,8 +1403,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             </button>
                             <button
                                 onClick={handleTranslationConfirm}
-                                className="flex-1 h-10 rounded-xl text-black font-medium transition-colors"
-                                style={{ backgroundColor: accentColor }}
+                                className="flex-1 h-10 rounded-xl font-medium transition-colors"
+                                style={{ backgroundColor: accentColor, color: accentTextColor }}
                             >
                                 {t('Search Mods')}
                             </button>
@@ -1242,6 +1435,39 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             </button>
                             <button
                                 onClick={handleDeleteLauncherData}
+                                className="flex-1 h-10 rounded-xl bg-red-500 text-white font-medium hover:bg-red-600 transition-colors"
+                            >
+                                {t('Delete')}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+            
+            {/* Delete Instance Confirmation Modal */}
+            {instanceToDelete && (
+                <div className="fixed inset-0 z-[250] flex items-center justify-center bg-black/60 backdrop-blur-sm">
+                    <div className="bg-[#1a1a1a] border border-white/10 rounded-2xl p-6 max-w-md w-full mx-4">
+                        <div className="flex items-center gap-3 mb-4">
+                            <div className="w-10 h-10 rounded-full bg-red-500/20 flex items-center justify-center">
+                                <Trash2 size={20} className="text-red-400" />
+                            </div>
+                            <h3 className="text-lg font-bold text-white">{t('Delete Instance?')}</h3>
+                        </div>
+                        <p className="text-white/70 text-sm mb-6">
+                            {t('This will delete the {{branch}} {{version}} instance and all its data. This action cannot be undone.')
+                                .replace('{{branch}}', instanceToDelete.Branch === 'release' ? t('Release') : t('Pre-Release'))
+                                .replace('{{version}}', instanceToDelete.Version === 0 ? t('latest') : `v${instanceToDelete.Version}`)}
+                        </p>
+                        <div className="flex gap-3">
+                            <button
+                                onClick={() => setInstanceToDelete(null)}
+                                className="flex-1 h-10 rounded-xl bg-white/5 text-white/70 hover:bg-white/10 transition-colors"
+                            >
+                                {t('Cancel')}
+                            </button>
+                            <button
+                                onClick={handleDeleteInstance}
                                 className="flex-1 h-10 rounded-xl bg-red-500 text-white font-medium hover:bg-red-600 transition-colors"
                             >
                                 {t('Delete')}
@@ -1341,12 +1567,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     </div>
                 </div>
             )}
-
-            {/* Skin Customizer Modal */}
-            <SkinCustomizer
-                isOpen={showSkinCustomizer}
-                onClose={() => setShowSkinCustomizer(false)}
-            />
         </>
     );
 };

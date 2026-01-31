@@ -16,13 +16,14 @@ interface NewsItem {
 
 interface NewsPreviewProps {
     getNews: (count: number) => Promise<NewsItem[]>
+    isPaused?: boolean
 }
 
 type NewsFilter = 'all' | 'hytale' | 'hyprism';
 
-export const NewsPreview: React.FC<NewsPreviewProps> = memo(({ getNews }) => {
+export const NewsPreview: React.FC<NewsPreviewProps> = memo(({ getNews, isPaused = false }) => {
     const { t } = useTranslation();
-    const { accentColor } = useAccentColor();
+    const { accentColor, accentTextColor } = useAccentColor();
     const [news, setNews] = useState<NewsItem[]>([]);
     const [initialLoading, setInitialLoading] = useState(true);
     const [isRefreshing, setIsRefreshing] = useState(false);
@@ -31,6 +32,7 @@ export const NewsPreview: React.FC<NewsPreviewProps> = memo(({ getNews }) => {
     const [filter, setFilter] = useState<NewsFilter>('all');
     const [isMinimized, setIsMinimized] = useState(false);
     const listRef = useRef<HTMLDivElement>(null);
+    const containerRef = useRef<HTMLDivElement>(null);
 
     const fetchNews = useCallback(async (count: number, reset = false) => {
         // Only show initial loading spinner if we have no news yet
@@ -66,10 +68,12 @@ export const NewsPreview: React.FC<NewsPreviewProps> = memo(({ getNews }) => {
 
     useEffect(() => {
         const interval = setInterval(() => {
-            fetchNews(limit);
-        }, 30000);
+            if (!isPaused) {
+                fetchNews(limit);
+            }
+        }, 1800000); // 30 minutes
         return () => clearInterval(interval);
-    }, [limit, fetchNews]);
+    }, [limit, fetchNews, isPaused]);
 
     const openLink = useCallback((url: string) => {
         BrowserOpenURL(url);
@@ -93,7 +97,7 @@ export const NewsPreview: React.FC<NewsPreviewProps> = memo(({ getNews }) => {
     );
 
     return (
-        <div className='flex flex-col gap-y-2 w-full max-w-[280px] sm:max-w-[320px] md:max-w-[360px] lg:max-w-[400px]'>
+        <div ref={containerRef} className='flex flex-col gap-y-2 w-full max-w-[280px] sm:max-w-[320px] md:max-w-[360px] lg:max-w-[400px]'>
             <div className='flex justify-between items-center'>
                 <div className='flex items-center gap-2'>
                     <Newspaper size={18} className='text-white' />
@@ -106,10 +110,10 @@ export const NewsPreview: React.FC<NewsPreviewProps> = memo(({ getNews }) => {
                                 onClick={() => setFilter('all')}
                                 className={`px-3 py-1 text-xs rounded-lg transition-all ${
                                     filter === 'all'
-                                        ? 'text-black font-medium'
+                                        ? 'font-medium'
                                         : 'bg-white/10 text-white/70 hover:bg-white/20'
                                 }`}
-                                style={filter === 'all' ? { backgroundColor: accentColor } : undefined}
+                                style={filter === 'all' ? { backgroundColor: accentColor, color: accentTextColor } : undefined}
                             >
                                 {t('All')}
                             </button>
@@ -117,10 +121,10 @@ export const NewsPreview: React.FC<NewsPreviewProps> = memo(({ getNews }) => {
                                 onClick={() => setFilter('hytale')}
                                 className={`px-3 py-1 text-xs rounded-lg transition-all ${
                                     filter === 'hytale'
-                                        ? 'text-black font-medium'
+                                        ? 'font-medium'
                                         : 'bg-white/10 text-white/70 hover:bg-white/20'
                                 }`}
-                                style={filter === 'hytale' ? { backgroundColor: accentColor } : undefined}
+                                style={filter === 'hytale' ? { backgroundColor: accentColor, color: accentTextColor } : undefined}
                             >
                                 {t('Hytale')}
                             </button>
@@ -128,10 +132,10 @@ export const NewsPreview: React.FC<NewsPreviewProps> = memo(({ getNews }) => {
                                 onClick={() => setFilter('hyprism')}
                                 className={`px-3 py-1 text-xs rounded-lg transition-all ${
                                     filter === 'hyprism'
-                                        ? 'text-black font-medium'
+                                        ? 'font-medium'
                                         : 'bg-white/10 text-white/70 hover:bg-white/20'
                                 }`}
-                                style={filter === 'hyprism' ? { backgroundColor: accentColor } : undefined}
+                                style={filter === 'hyprism' ? { backgroundColor: accentColor, color: accentTextColor } : undefined}
                             >
                                 {t('HyPrism')}
                             </button>
@@ -165,7 +169,7 @@ export const NewsPreview: React.FC<NewsPreviewProps> = memo(({ getNews }) => {
                         </div>
                     </div>
                 ) : filteredNews.length > 0 ? (
-                    <div ref={listRef} onScroll={handleScroll} className='flex flex-col gap-2 max-h-[240px] sm:max-h-[280px] md:max-h-[320px] overflow-y-auto pr-1 relative'>
+                    <div ref={listRef} onScroll={handleScroll} className='flex flex-col gap-2 overflow-y-auto pr-1 relative max-h-[40vh]'>
                         {/* Subtle refresh indicator */}
                         {isRefreshing && (
                             <div className="absolute top-0 left-1/2 -translate-x-1/2 z-10">

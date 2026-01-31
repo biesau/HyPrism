@@ -1,8 +1,9 @@
-import React, { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useMemo, ReactNode } from 'react';
 import { GetAccentColor, SetAccentColor } from '../../wailsjs/go/app/App';
 
 interface AccentColorContextType {
   accentColor: string;
+  accentTextColor: string; // Color for text on accent background (white or black)
   setAccentColor: (color: string) => Promise<void>;
 }
 
@@ -20,12 +21,32 @@ const hexToRgb = (hex: string): { r: number; g: number; b: number } | null => {
     : null;
 };
 
+// Calculate relative luminance using WCAG formula
+const getLuminance = (r: number, g: number, b: number): number => {
+  const [rs, gs, bs] = [r, g, b].map((c) => {
+    const srgb = c / 255;
+    return srgb <= 0.03928 ? srgb / 12.92 : Math.pow((srgb + 0.055) / 1.055, 2.4);
+  });
+  return 0.2126 * rs + 0.7152 * gs + 0.0722 * bs;
+};
+
+// Get contrast text color (black or white) based on background luminance
+export const getContrastTextColor = (hex: string): string => {
+  const rgb = hexToRgb(hex);
+  if (!rgb) return '#FFFFFF';
+  const luminance = getLuminance(rgb.r, rgb.g, rgb.b);
+  // Use a threshold of 0.5 for deciding between black and white text
+  return luminance > 0.5 ? '#000000' : '#FFFFFF';
+};
+
 // Update CSS variables on the document root
 const updateCssVariables = (color: string) => {
   const root = document.documentElement;
   const rgb = hexToRgb(color);
+  const contrastColor = getContrastTextColor(color);
   
   root.style.setProperty('--accent-color', color);
+  root.style.setProperty('--accent-text-color', contrastColor);
   
   if (rgb) {
     root.style.setProperty('--accent-r', String(rgb.r));
@@ -60,8 +81,11 @@ export const AccentColorProvider: React.FC<{ children: ReactNode }> = ({ childre
     }
   }, []);
 
+  // Memoize the contrast text color to avoid recalculating on every render
+  const accentTextColor = useMemo(() => getContrastTextColor(accentColor), [accentColor]);
+
   return (
-    <AccentColorContext.Provider value={{ accentColor, setAccentColor }}>
+    <AccentColorContext.Provider value={{ accentColor, accentTextColor, setAccentColor }}>
       {children}
     </AccentColorContext.Provider>
   );

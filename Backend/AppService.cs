@@ -28,10 +28,8 @@ public class AppService : IDisposable
     private bool _disposed;
     private PhotinoWindow? _mainWindow;
     
-    // Skin protection system - saves and restores player skins
-    private Dictionary<string, string> _skinBackups = new();
-    private string? _lastLaunchedVersionPath;
-    private FileSystemWatcher? _skinWatcher;
+    // Lock for mod manifest operations to prevent concurrent writes
+    private static readonly SemaphoreSlim _modManifestLock = new(1, 1);
     
     private static readonly HttpClient HttpClient = new()
     {
@@ -123,6 +121,14 @@ public class AppService : IDisposable
 
             return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".local", "share", "HyPrism");
         }
+    }
+
+    /// <summary>
+    /// Gets the UserData path for an instance. The game stores skins, settings, etc. here.
+    /// </summary>
+    private string GetInstanceUserDataPath(string versionPath)
+    {
+        return Path.Combine(versionPath, "UserData");
     }
 
     private static string GetOS()
@@ -942,6 +948,20 @@ public class AppService : IDisposable
         }
     }
 
+    /// <summary>
+    /// Gets the sequence of patch versions to apply for a differential update.
+    /// Returns list of versions from (currentVersion + 1) to targetVersion inclusive.
+    /// </summary>
+    private static List<int> GetPatchSequence(int currentVersion, int targetVersion)
+    {
+        var patches = new List<int>();
+        for (int v = currentVersion + 1; v <= targetVersion; v++)
+        {
+            patches.Add(v);
+        }
+        return patches;
+    }
+
     private string GetInstancePath(string branch, int version)
     {
         if (version == 0)
@@ -1068,28 +1088,48 @@ public class AppService : IDisposable
         try
         {
             var uuid = _config.UUID;
-            if (string.IsNullOrWhiteSpace(uuid)) return null;
-            
-            // First check the persistent backup in LAUNCHER folder (this survives game updates)
-            var persistentPath = Path.Combine(_appDir, "AvatarBackups", $"{uuid}.png");
-            if (File.Exists(persistentPath) && new FileInfo(persistentPath).Length > 100)
+            if (string.IsNullOrWhiteSpace(uuid))
             {
-                var bytes = File.ReadAllBytes(persistentPath);
-                return $"data:image/png;base64,{Convert.ToBase64String(bytes)}";
+                Logger.Warning("Avatar", "No UUID configured");
+                return null;
             }
             
-            // Fall back to game cache (may have new edits not yet backed up)
             var branch = NormalizeVersionType(_config.VersionType);
             var versionPath = ResolveInstancePath(branch, 0, preferExisting: true);
-            var cachePath = Path.Combine(versionPath, "UserData", "CachedAvatarPreviews", $"{uuid}.png");
-            if (File.Exists(cachePath) && new FileInfo(cachePath).Length > 100)
+            var userDataPath = GetInstanceUserDataPath(versionPath);
+            var cacheDir = Path.Combine(userDataPath, "CachedAvatarPreviews");
+            var cachePath = Path.Combine(cacheDir, $"{uuid}.png");
+            var persistentPath = Path.Combine(_appDir, "AvatarBackups", $"{uuid}.png");
+            
+            // Check what files exist
+            var cacheExists = File.Exists(cachePath) && new FileInfo(cachePath).Length > 100;
+            var persistentExists = File.Exists(persistentPath) && new FileInfo(persistentPath).Length > 100;
+            
+            // Use cache if available (prefer newer file)
+            if (cacheExists)
             {
-                var bytes = File.ReadAllBytes(cachePath);
-                // Backup to launcher folder for persistence
-                try { 
-                    Directory.CreateDirectory(Path.GetDirectoryName(persistentPath)!); 
-                    File.Copy(cachePath, persistentPath, true); 
-                } catch { }
+                var cacheInfo = new FileInfo(cachePath);
+                var persistentInfo = persistentExists ? new FileInfo(persistentPath) : null;
+                var useCache = persistentInfo == null || cacheInfo.LastWriteTimeUtc > persistentInfo.LastWriteTimeUtc;
+                
+                if (useCache)
+                {
+                    var bytes = File.ReadAllBytes(cachePath);
+                    // Backup to persistent storage
+                    try
+                    {
+                        Directory.CreateDirectory(Path.GetDirectoryName(persistentPath)!);
+                        File.Copy(cachePath, persistentPath, true);
+                    }
+                    catch { }
+                    return $"data:image/png;base64,{Convert.ToBase64String(bytes)}";
+                }
+            }
+            
+            // Fall back to persistent backup
+            if (persistentExists)
+            {
+                var bytes = File.ReadAllBytes(persistentPath);
                 return $"data:image/png;base64,{Convert.ToBase64String(bytes)}";
             }
             
@@ -1113,11 +1153,277 @@ public class AppService : IDisposable
         return true;
     }
     
+    /// <summary>
+    /// Clears the avatar cache for the current UUID.
+    /// Call this when the user wants to reset their avatar.
+    /// </summary>
+    public bool ClearAvatarCache()
+    {
+        try
+        {
+            var uuid = _config.UUID;
+            if (string.IsNullOrWhiteSpace(uuid)) return false;
+            
+            // Clear persistent backup
+            var persistentPath = Path.Combine(_appDir, "AvatarBackups", $"{uuid}.png");
+            if (File.Exists(persistentPath))
+            {
+                File.Delete(persistentPath);
+                Logger.Info("Avatar", $"Deleted persistent avatar for {uuid}");
+            }
+            
+            // Clear game cache for all instances
+            var instanceRoot = GetInstanceRoot();
+            if (Directory.Exists(instanceRoot))
+            {
+                foreach (var branchDir in Directory.GetDirectories(instanceRoot))
+                {
+                    foreach (var versionDir in Directory.GetDirectories(branchDir))
+                    {
+                        var avatarPath = Path.Combine(versionDir, "UserData", "CachedAvatarPreviews", $"{uuid}.png");
+                        if (File.Exists(avatarPath))
+                        {
+                            File.Delete(avatarPath);
+                            Logger.Info("Avatar", $"Deleted cached avatar at {avatarPath}");
+                        }
+                    }
+                }
+            }
+            
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("Avatar", $"Failed to clear avatar cache: {ex.Message}");
+            return false;
+        }
+    }
+    
     public bool SetNick(string nick)
     {
         _config.Nick = nick;
         SaveConfig();
         return true;
+    }
+    
+    // ========== Profile Management ==========
+    
+    /// <summary>
+    /// Gets all saved profiles, filtering out any with null/empty names.
+    /// </summary>
+    public List<Profile> GetProfiles()
+    {
+        // Clean up any null/empty profiles first
+        if (_config.Profiles != null)
+        {
+            var validProfiles = _config.Profiles
+                .Where(p => !string.IsNullOrWhiteSpace(p.Name) && !string.IsNullOrWhiteSpace(p.UUID))
+                .ToList();
+            
+            if (validProfiles.Count != _config.Profiles.Count)
+            {
+                Logger.Info("Profile", $"Cleaned up {_config.Profiles.Count - validProfiles.Count} invalid profiles");
+                _config.Profiles = validProfiles;
+                SaveConfig();
+            }
+        }
+        
+        return _config.Profiles ?? new List<Profile>();
+    }
+    
+    /// <summary>
+    /// Gets the currently active profile index. -1 means no profile selected.
+    /// </summary>
+    public int GetActiveProfileIndex()
+    {
+        return _config.ActiveProfileIndex;
+    }
+    
+    /// <summary>
+    /// Creates a new profile with the given name and UUID.
+    /// Returns the created profile.
+    /// </summary>
+    public Profile? CreateProfile(string name, string uuid)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(uuid))
+            {
+                Logger.Warning("Profile", $"Cannot create profile with empty name or UUID");
+                return null;
+            }
+            
+            // Validate UUID format
+            if (!Guid.TryParse(uuid.Trim(), out var parsedUuid))
+            {
+                Logger.Warning("Profile", $"Invalid UUID format: {uuid}");
+                return null;
+            }
+            
+            var profile = new Profile
+            {
+                Id = Guid.NewGuid().ToString(),
+                UUID = parsedUuid.ToString(),
+                Name = name.Trim(),
+                CreatedAt = DateTime.UtcNow
+            };
+            
+            _config.Profiles ??= new List<Profile>();
+            _config.Profiles.Add(profile);
+            SaveConfig();
+            
+            Logger.Success("Profile", $"Created profile '{name}' with UUID {parsedUuid}");
+            return profile;
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("Profile", $"Failed to create profile: {ex.Message}");
+            return null;
+        }
+    }
+    
+    /// <summary>
+    /// Deletes a profile by its ID.
+    /// Returns true if successful.
+    /// </summary>
+    public bool DeleteProfile(string profileId)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(profileId))
+            {
+                return false;
+            }
+            
+            var index = _config.Profiles?.FindIndex(p => p.Id == profileId) ?? -1;
+            if (index < 0)
+            {
+                return false;
+            }
+            
+            var profile = _config.Profiles![index];
+            _config.Profiles.RemoveAt(index);
+            
+            // Adjust active profile index if needed
+            if (_config.ActiveProfileIndex == index)
+            {
+                _config.ActiveProfileIndex = -1;
+            }
+            else if (_config.ActiveProfileIndex > index)
+            {
+                _config.ActiveProfileIndex--;
+            }
+            
+            SaveConfig();
+            Logger.Success("Profile", $"Deleted profile '{profile.Name}'");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("Profile", $"Failed to delete profile: {ex.Message}");
+            return false;
+        }
+    }
+    
+    /// <summary>
+    /// Switches to a profile by its index.
+    /// Returns true if successful.
+    /// </summary>
+    public bool SwitchProfile(int index)
+    {
+        try
+        {
+            if (_config.Profiles == null || index < 0 || index >= _config.Profiles.Count)
+            {
+                return false;
+            }
+            
+            var profile = _config.Profiles[index];
+            
+            // Update current UUID and Nick
+            _config.UUID = profile.UUID;
+            _config.Nick = profile.Name;
+            _config.ActiveProfileIndex = index;
+            SaveConfig();
+            
+            Logger.Success("Profile", $"Switched to profile '{profile.Name}'");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("Profile", $"Failed to switch profile: {ex.Message}");
+            return false;
+        }
+    }
+    
+    /// <summary>
+    /// Updates an existing profile.
+    /// </summary>
+    public bool UpdateProfile(string profileId, string? newName, string? newUuid)
+    {
+        try
+        {
+            var profile = _config.Profiles?.FirstOrDefault(p => p.Id == profileId);
+            if (profile == null)
+            {
+                return false;
+            }
+            
+            if (!string.IsNullOrWhiteSpace(newName))
+            {
+                profile.Name = newName.Trim();
+            }
+            
+            if (!string.IsNullOrWhiteSpace(newUuid) && Guid.TryParse(newUuid.Trim(), out var parsedUuid))
+            {
+                profile.UUID = parsedUuid.ToString();
+            }
+            
+            // If this is the active profile, also update current UUID/Nick
+            var index = _config.Profiles!.FindIndex(p => p.Id == profileId);
+            if (index == _config.ActiveProfileIndex)
+            {
+                _config.UUID = profile.UUID;
+                _config.Nick = profile.Name;
+            }
+            
+            SaveConfig();
+            Logger.Success("Profile", $"Updated profile '{profile.Name}'");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("Profile", $"Failed to update profile: {ex.Message}");
+            return false;
+        }
+    }
+    
+    /// <summary>
+    /// Saves the current UUID/Nick as a new profile.
+    /// Returns the created profile.
+    /// </summary>
+    public Profile? SaveCurrentAsProfile()
+    {
+        var uuid = _config.UUID;
+        var name = _config.Nick;
+        
+        if (string.IsNullOrWhiteSpace(uuid) || string.IsNullOrWhiteSpace(name))
+        {
+            return null;
+        }
+        
+        // Check if a profile with this UUID already exists
+        var existing = _config.Profiles?.FirstOrDefault(p => p.UUID == uuid);
+        if (existing != null)
+        {
+            // Update existing profile
+            existing.Name = name;
+            SaveConfig();
+            return existing;
+        }
+        
+        // Create new profile
+        return CreateProfile(name, uuid);
     }
 
     public Task<string?> SetInstanceDirectoryAsync(string path)
@@ -1834,10 +2140,104 @@ public class AppService : IDisposable
             Logger.Info("Download", $"Target version: {targetVersion}");
             Logger.Info("Download", $"Client exists (game installed): {gameIsInstalled}");
             
-            // If game is already installed, just launch it!
+            // If game is already installed, check for updates then launch
             if (gameIsInstalled)
             {
-                Logger.Success("Download", "Game is already installed - skipping all downloads, launching directly!");
+                Logger.Success("Download", "Game is already installed");
+                
+                // Check if we need a differential update (only for latest instance)
+                if (isLatestInstance)
+                {
+                    var info = LoadLatestInfo(branch);
+                    int installedVersion = info?.Version ?? 0;
+                    int latestVersion = versions[0];
+                    
+                    Logger.Info("Download", $"Installed version: {installedVersion}, Latest version: {latestVersion}");
+                    
+                    // If installed version is different from latest, apply differential update
+                    if (installedVersion > 0 && installedVersion != latestVersion)
+                    {
+                        Logger.Info("Download", $"Differential update available: {installedVersion} -> {latestVersion}");
+                        SendProgress(window, "update", 0, $"Updating game from v{installedVersion} to v{latestVersion}...", 0, 0);
+                        
+                        try
+                        {
+                            // Apply differential updates for each version step
+                            var patchesToApply = GetPatchSequence(installedVersion, latestVersion);
+                            Logger.Info("Download", $"Patches to apply: {string.Join(" -> ", patchesToApply)}");
+                            
+                            for (int i = 0; i < patchesToApply.Count; i++)
+                            {
+                                int patchVersion = patchesToApply[i];
+                                ThrowIfCancelled();
+                                
+                                // Progress: each patch gets an equal share of 0-90%
+                                int baseProgress = (i * 90) / patchesToApply.Count;
+                                int progressPerPatch = 90 / patchesToApply.Count;
+                                
+                                SendProgress(window, "update", baseProgress, $"Downloading patch {i + 1}/{patchesToApply.Count} (v{patchVersion})...", 0, 0);
+                                
+                                // Ensure Butler is installed
+                                await _butlerService.EnsureButlerInstalledAsync((p, m) => { });
+                                
+                                // Download the PWR patch
+                                var patchOs = GetOS();
+                                var patchArch = GetArch();
+                                var patchBranchType = NormalizeVersionType(branch);
+                                string patchUrl = $"https://game-patches.hytale.com/patches/{patchOs}/{patchArch}/{patchBranchType}/0/{patchVersion}.pwr";
+                                string patchPwrPath = Path.Combine(_appDir, "cache", $"{branch}_patch_{patchVersion}.pwr");
+                                
+                                Directory.CreateDirectory(Path.GetDirectoryName(patchPwrPath)!);
+                                Logger.Info("Download", $"Downloading patch: {patchUrl}");
+                                
+                                await DownloadFileAsync(patchUrl, patchPwrPath, (progress, downloaded, total) =>
+                                {
+                                    int mappedProgress = baseProgress + (int)(progress * 0.5 * progressPerPatch / 100);
+                                    SendProgress(window, "update", mappedProgress, $"Downloading patch {i + 1}/{patchesToApply.Count}... {progress}%", downloaded, total);
+                                }, _downloadCts.Token);
+                                
+                                ThrowIfCancelled();
+                                
+                                // Apply the patch using Butler (differential update)
+                                int applyBaseProgress = baseProgress + (progressPerPatch / 2);
+                                SendProgress(window, "update", applyBaseProgress, $"Applying patch {i + 1}/{patchesToApply.Count}...", 0, 0);
+                                
+                                await _butlerService.ApplyPwrAsync(patchPwrPath, versionPath, (progress, message) =>
+                                {
+                                    int mappedProgress = applyBaseProgress + (int)(progress * 0.5 * progressPerPatch / 100);
+                                    SendProgress(window, "update", mappedProgress, message, 0, 0);
+                                });
+                                
+                                // Clean up patch file
+                                if (File.Exists(patchPwrPath))
+                                {
+                                    try { File.Delete(patchPwrPath); } catch { }
+                                }
+                                
+                                // Save progress after each patch
+                                SaveLatestInfo(branch, patchVersion);
+                                Logger.Success("Download", $"Patch {patchVersion} applied successfully");
+                            }
+                            
+                            Logger.Success("Download", $"Differential update complete: now at v{latestVersion}");
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            throw;
+                        }
+                        catch (Exception ex)
+                        {
+                            Logger.Error("Download", $"Differential update failed: {ex.Message}");
+                            // Don't fail completely - game is still playable at old version
+                            Logger.Warning("Download", "Continuing with existing version...");
+                        }
+                    }
+                    else if (info == null)
+                    {
+                        // No version info saved, save current
+                        SaveLatestInfo(branch, targetVersion);
+                    }
+                }
                 
                 // Just ensure JRE is available (download if needed, but don't touch the game)
                 string jrePath = GetJavaPath();
@@ -1857,16 +2257,6 @@ public class AppService : IDisposable
                     {
                         Logger.Error("JRE", $"JRE install failed: {ex.Message}");
                         return new DownloadProgress { Error = $"Failed to install Java Runtime: {ex.Message}" };
-                    }
-                }
-                
-                // Update latest info if needed
-                if (isLatestInstance)
-                {
-                    var info = LoadLatestInfo(branch);
-                    if (info == null || info.Version != targetVersion)
-                    {
-                        SaveLatestInfo(branch, targetVersion);
                     }
                 }
                 
@@ -3082,7 +3472,28 @@ public class AppService : IDisposable
             }
         }
 
-        // Fetch auth token if online mode is enabled
+        // STEP 1: Determine UUID to use for this session
+        // This must happen BEFORE auth token fetching so we use the correct UUID
+        string baseUuid;
+        string sessionUuid; // The UUID to actually use for this game session
+        
+        if (string.IsNullOrWhiteSpace(_config.UUID))
+        {
+            baseUuid = GenerateOfflineUUID(_config.Nick);
+            _config.UUID = baseUuid;
+            SaveConfig();
+            Logger.Info("Config", $"Generated and saved UUID from nickname: {baseUuid}");
+        }
+        else
+        {
+            baseUuid = _config.UUID;
+        }
+        
+        // Always use the saved UUID to preserve player items/progress
+        sessionUuid = baseUuid;
+        Logger.Info("Game", $"Using saved UUID: {sessionUuid}");
+
+        // STEP 2: Fetch auth token if online mode is enabled (using session UUID)
         string? identityToken = null;
         string? sessionToken = null;
         if (_config.OnlineMode && !string.IsNullOrWhiteSpace(_config.AuthDomain))
@@ -3092,7 +3503,9 @@ public class AppService : IDisposable
             try
             {
                 var authService = new AuthService(HttpClient, _config.AuthDomain);
-                var tokenResult = await authService.GetGameSessionTokenAsync(_config.UUID, _config.Nick);
+                
+                // Use sessionUuid (which may be fresh/random) for auth
+                var tokenResult = await authService.GetGameSessionTokenAsync(sessionUuid, _config.Nick);
                 
                 if (tokenResult.Success && !string.IsNullOrEmpty(tokenResult.Token))
                 {
@@ -3152,32 +3565,16 @@ public class AppService : IDisposable
             Logger.Warning("Game", $"Could not verify Java: {ex.Message}");
         }
 
-        // Create UserData directory
-        string userDataDir = Path.Combine(versionPath, "UserData");
+        // Use per-instance UserData folder - this keeps skins/settings with the game instance
+        string userDataDir = GetInstanceUserDataPath(versionPath);
         Directory.CreateDirectory(userDataDir);
-
-        // SKIN PROTECTION: Protect skins from server overwrite
-        await ProtectSkinsBeforeLaunch(versionPath);
-
-        // Use saved UUID if available; fallback to offline UUID from name and save it
-        string uuid;
-        if (string.IsNullOrWhiteSpace(_config.UUID))
-        {
-            uuid = GenerateOfflineUUID(_config.Nick);
-            _config.UUID = uuid;
-            SaveConfig();
-            Logger.Info("Config", $"Generated and saved UUID from nickname: {uuid}");
-        }
-        else
-        {
-            uuid = _config.UUID;
-        }
 
         Logger.Info("Game", $"Launching: {executable}");
         Logger.Info("Game", $"Java: {javaPath}");
         Logger.Info("Game", $"AppDir: {gameDir}");
         Logger.Info("Game", $"UserData: {userDataDir}");
         Logger.Info("Game", $"Online Mode: {_config.OnlineMode}");
+        Logger.Info("Game", $"Session UUID: {sessionUuid}");
 
         // Build arguments - use only documented game arguments
         var gameArgs = new List<string>
@@ -3194,15 +3591,16 @@ public class AppService : IDisposable
         if (_config.OnlineMode && !string.IsNullOrEmpty(identityToken) && !string.IsNullOrEmpty(sessionToken))
         {
             gameArgs.Add("--auth-mode authenticated");
-            gameArgs.Add($"--uuid \"{uuid}\"");
+            gameArgs.Add($"--uuid \"{sessionUuid}\"");
             gameArgs.Add($"--identity-token \"{identityToken}\"");
             gameArgs.Add($"--session-token \"{sessionToken}\"");
-            Logger.Info("Game", "Using authenticated mode with identity and session tokens");
+            Logger.Info("Game", $"Using authenticated mode with session UUID: {sessionUuid}");
         }
         else
         {
             gameArgs.Add("--auth-mode insecure");
-            Logger.Info("Game", "Using insecure auth mode (no token validation)");
+            gameArgs.Add($"--uuid \"{sessionUuid}\"");
+            Logger.Info("Game", $"Using insecure auth mode with session UUID: {sessionUuid}");
         }
 
         // On macOS/Linux, create a launch script to run with clean environment
@@ -3308,9 +3706,6 @@ exec env -i \
             Logger.Info("Game", $"Game process exited with code: {exitCode}");
             _gameProcess = null;
             
-            // SKIN PROTECTION: Cleanup and ensure skins are preserved
-            CleanupSkinProtection();
-            
             // Set Discord presence back to Idle
             _discordService.SetPresence(DiscordService.PresenceState.Idle);
             
@@ -3318,377 +3713,6 @@ exec env -i \
             SendGameStateEvent("stopped", exitCode);
         });
     }
-    
-    #region Skin Protection System
-    
-    /// <summary>
-    /// Simple skin persistence:
-    /// 1. ALWAYS delete cache before launch (this forces random skin if no backup)
-    /// 2. If we have a saved skin FOR THIS USER, write it to cache IMMEDIATELY before game starts
-    /// 3. Watch for any edits during gameplay and save them
-    /// 
-    /// Backups are stored in the LAUNCHER data folder (not game UserData) so they persist across game updates.
-    /// IMPORTANT: Only the current user's skin is backed up/restored - not skins from other UUIDs!
-    /// </summary>
-    private Task ProtectSkinsBeforeLaunch(string versionPath)
-    {
-        try
-        {
-            _lastLaunchedVersionPath = versionPath;
-            _skinBackups.Clear();
-            
-            // Get current user's UUID - this is the ONLY skin we care about
-            var currentUuid = _config.UUID;
-            if (string.IsNullOrWhiteSpace(currentUuid))
-            {
-                Logger.Warning("Skin", "No UUID configured - skipping skin protection");
-                return Task.CompletedTask;
-            }
-            var userSkinFile = $"{currentUuid}.json";
-            var userAvatarFile = $"{currentUuid}.png";
-            
-            Logger.Info("Skin", $"Protecting skin for UUID: {currentUuid}");
-            
-            // Game's cache folders
-            var userDataDir = Path.Combine(versionPath, "UserData");
-            var cachedSkinsDir = Path.Combine(userDataDir, "CachedPlayerSkins");
-            var cachedAvatarDir = Path.Combine(userDataDir, "CachedAvatarPreviews");
-            
-            // Persistent backups go in LAUNCHER data folder (survives game updates!)
-            var persistentBackupDir = Path.Combine(_appDir, "SkinBackups");
-            var persistentAvatarBackupDir = Path.Combine(_appDir, "AvatarBackups");
-            
-            Directory.CreateDirectory(persistentBackupDir);
-            Directory.CreateDirectory(persistentAvatarBackupDir);
-            Directory.CreateDirectory(cachedSkinsDir);
-            Directory.CreateDirectory(cachedAvatarDir);
-            
-            // MIGRATION: Move old backups from game folder to launcher folder (one-time)
-            var oldBackupDir = Path.Combine(userDataDir, "PersistentSkinBackups");
-            var oldAvatarBackupDir = Path.Combine(userDataDir, "PersistentAvatarBackups");
-            if (Directory.Exists(oldBackupDir))
-            {
-                Logger.Info("Skin", "Migrating old skin backups to launcher folder...");
-                foreach (var file in Directory.GetFiles(oldBackupDir, "*.json"))
-                {
-                    try
-                    {
-                        var fileName = Path.GetFileName(file);
-                        var newPath = Path.Combine(persistentBackupDir, fileName);
-                        if (!File.Exists(newPath)) File.Move(file, newPath);
-                    }
-                    catch { }
-                }
-                try { Directory.Delete(oldBackupDir, true); } catch { }
-            }
-            if (Directory.Exists(oldAvatarBackupDir))
-            {
-                Logger.Info("Skin", "Migrating old avatar backups to launcher folder...");
-                foreach (var file in Directory.GetFiles(oldAvatarBackupDir, "*.png"))
-                {
-                    try
-                    {
-                        var fileName = Path.GetFileName(file);
-                        var newPath = Path.Combine(persistentAvatarBackupDir, fileName);
-                        if (!File.Exists(newPath)) File.Move(file, newPath);
-                    }
-                    catch { }
-                }
-                try { Directory.Delete(oldAvatarBackupDir, true); } catch { }
-            }
-            
-            // Step 1: Backup current user's skin from cache BEFORE deleting (if valid)
-            var userCacheSkinPath = Path.Combine(cachedSkinsDir, userSkinFile);
-            var userBackupSkinPath = Path.Combine(persistentBackupDir, userSkinFile);
-            if (File.Exists(userCacheSkinPath))
-            {
-                try
-                {
-                    var content = File.ReadAllText(userCacheSkinPath);
-                    if (IsValidSkinData(content))
-                    {
-                        File.WriteAllText(userBackupSkinPath, content);
-                        _skinBackups[userSkinFile] = content;
-                        Logger.Success("Skin", $"Backed up your skin from cache");
-                    }
-                }
-                catch { }
-            }
-            
-            // Backup current user's avatar preview
-            var userCacheAvatarPath = Path.Combine(cachedAvatarDir, userAvatarFile);
-            var userBackupAvatarPath = Path.Combine(persistentAvatarBackupDir, userAvatarFile);
-            if (File.Exists(userCacheAvatarPath))
-            {
-                try
-                {
-                    if (new FileInfo(userCacheAvatarPath).Length > 100)
-                    {
-                        File.Copy(userCacheAvatarPath, userBackupAvatarPath, overwrite: true);
-                        Logger.Info("Skin", $"Backed up your avatar");
-                    }
-                }
-                catch { }
-            }
-            
-            // Step 2: Load your persistent backup (in case cache was empty)
-            if (!_skinBackups.ContainsKey(userSkinFile) && File.Exists(userBackupSkinPath))
-            {
-                try
-                {
-                    var content = File.ReadAllText(userBackupSkinPath);
-                    if (IsValidSkinData(content))
-                    {
-                        _skinBackups[userSkinFile] = content;
-                        Logger.Info("Skin", $"Loaded your saved skin from backup");
-                    }
-                }
-                catch { }
-            }
-            
-            // Step 3: DELETE the cache folders (clears ALL cached skins including from other UUIDs)
-            Logger.Info("Skin", "Clearing cache folders...");
-            try
-            {
-                if (Directory.Exists(cachedSkinsDir))
-                    Directory.Delete(cachedSkinsDir, recursive: true);
-                if (Directory.Exists(cachedAvatarDir))
-                    Directory.Delete(cachedAvatarDir, recursive: true);
-            }
-            catch (Exception ex)
-            {
-                Logger.Warning("Skin", $"Could not clear cache: {ex.Message}");
-            }
-            
-            // Recreate folders
-            Directory.CreateDirectory(cachedSkinsDir);
-            Directory.CreateDirectory(cachedAvatarDir);
-            
-            // Step 4: IMMEDIATELY restore ONLY YOUR saved skin (before game even starts!)
-            if (_skinBackups.TryGetValue(userSkinFile, out var savedSkin))
-            {
-                try
-                {
-                    var targetPath = Path.Combine(cachedSkinsDir, userSkinFile);
-                    File.WriteAllText(targetPath, savedSkin);
-                    Logger.Success("Skin", $"✓ Restored your skin to cache");
-                    
-                    // Restore your avatar too if we have it
-                    if (File.Exists(userBackupAvatarPath))
-                    {
-                        File.Copy(userBackupAvatarPath, userCacheAvatarPath, overwrite: true);
-                        Logger.Success("Skin", $"✓ Restored your avatar to cache");
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Logger.Warning("Skin", $"Could not restore skin: {ex.Message}");
-                }
-            }
-            else
-            {
-                Logger.Info("Skin", "No saved skin for your UUID - you'll get a fresh random skin!");
-            }
-            
-            // Step 5: Start watcher to save any NEW edits during gameplay
-            StartSkinWatcher(cachedSkinsDir, persistentBackupDir, cachedAvatarDir, persistentAvatarBackupDir);
-            
-            Logger.Success("Skin", "Skin protection active!");
-        }
-        catch (Exception ex)
-        {
-            Logger.Error("Skin", $"Failed to set up skin protection: {ex.Message}");
-        }
-        
-        return Task.CompletedTask;
-    }
-    
-    private bool IsValidSkinData(string content)
-    {
-        if (string.IsNullOrWhiteSpace(content)) return false;
-        if (content.Length < 100) return false;
-        // Valid skin must have these fields
-        return content.Contains("bodyCharacteristic") && 
-               (content.Contains("haircut") || content.Contains("eyes") || content.Contains("mouth"));
-    }
-    
-    private void StartSkinWatcher(string cachedSkinsDir, string persistentBackupDir, string cachedAvatarDir, string persistentAvatarBackupDir)
-    {
-        try
-        {
-            StopSkinWatcher();
-            
-            _skinWatcher = new FileSystemWatcher(cachedSkinsDir, "*.json")
-            {
-                NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.Size | NotifyFilters.CreationTime,
-                EnableRaisingEvents = true
-            };
-            
-            _skinWatcher.Changed += OnSkinFileChanged;
-            _skinWatcher.Created += OnSkinFileChanged;
-            
-            Logger.Info("Skin", "Started skin file watcher");
-        }
-        catch (Exception ex)
-        {
-            Logger.Warning("Skin", $"Could not start skin watcher: {ex.Message}");
-        }
-    }
-    
-    private void StopSkinWatcher()
-    {
-        if (_skinWatcher != null)
-        {
-            _skinWatcher.EnableRaisingEvents = false;
-            _skinWatcher.Dispose();
-            _skinWatcher = null;
-        }
-    }
-    
-    private void OnSkinFileChanged(object sender, FileSystemEventArgs e)
-    {
-        // Run in a separate thread to not block the watcher
-        Task.Run(() => ProcessSkinFileChange(e.FullPath));
-    }
-    
-    private void ProcessSkinFileChange(string filePath)
-    {
-        try
-        {
-            var fileName = Path.GetFileName(filePath);
-            
-            // Only care about the current user's skin file
-            var currentUuid = _config.UUID;
-            if (string.IsNullOrWhiteSpace(currentUuid)) return;
-            var userSkinFile = $"{currentUuid}.json";
-            if (!fileName.Equals(userSkinFile, StringComparison.OrdinalIgnoreCase)) return;
-            
-            // Small delay to let the write complete
-            Thread.Sleep(100);
-            
-            if (!File.Exists(filePath)) return;
-            
-            string content;
-            try
-            {
-                content = File.ReadAllText(filePath);
-            }
-            catch
-            {
-                // File might be locked, retry once
-                Thread.Sleep(150);
-                try { content = File.ReadAllText(filePath); }
-                catch { return; }
-            }
-            
-            // ALWAYS save valid skin data - this is the user's edit!
-            if (IsValidSkinData(content))
-            {
-                // Check if content is actually different
-                if (_skinBackups.TryGetValue(fileName, out var existingBackup) && existingBackup == content)
-                {
-                    return; // Same content, skip
-                }
-                
-                // New valid skin data - save to LAUNCHER folder!
-                _skinBackups[fileName] = content;
-                var persistentPath = Path.Combine(_appDir, "SkinBackups", fileName);
-                try 
-                { 
-                    Directory.CreateDirectory(Path.GetDirectoryName(persistentPath)!);
-                    File.WriteAllText(persistentPath, content); 
-                    Logger.Success("Skin", $"✓ SAVED! New skin edit: {fileName}");
-                }
-                catch (Exception ex)
-                {
-                    Logger.Warning("Skin", $"Could not persist backup: {ex.Message}");
-                }
-                
-                // Also backup avatar if it exists
-                try
-                {
-                    var uuid = Path.GetFileNameWithoutExtension(fileName);
-                    var avatarCachePath = Path.Combine(Path.GetDirectoryName(filePath)!, "..", "CachedAvatarPreviews", $"{uuid}.png");
-                    if (File.Exists(avatarCachePath) && new FileInfo(avatarCachePath).Length > 100)
-                    {
-                        var avatarBackupPath = Path.Combine(_appDir, "AvatarBackups", $"{uuid}.png");
-                        Directory.CreateDirectory(Path.GetDirectoryName(avatarBackupPath)!);
-                        File.Copy(avatarCachePath, avatarBackupPath, overwrite: true);
-                    }
-                }
-                catch { }
-            }
-        }
-        catch (Exception ex)
-        {
-            Logger.Warning("Skin", $"Error processing skin change: {ex.Message}");
-        }
-    }
-    
-    private void CleanupSkinProtection()
-    {
-        try
-        {
-            // Stop the watcher
-            StopSkinWatcher();
-            
-            if (string.IsNullOrEmpty(_lastLaunchedVersionPath)) return;
-            
-            // Get current user's UUID - only backup THEIR skin
-            var currentUuid = _config.UUID;
-            if (string.IsNullOrWhiteSpace(currentUuid)) return;
-            
-            var userSkinFile = $"{currentUuid}.json";
-            var userAvatarFile = $"{currentUuid}.png";
-            
-            var cachedSkinsDir = Path.Combine(_lastLaunchedVersionPath, "UserData", "CachedPlayerSkins");
-            var cachedAvatarDir = Path.Combine(_lastLaunchedVersionPath, "UserData", "CachedAvatarPreviews");
-            
-            // Persistent backups go in LAUNCHER folder
-            var persistentBackupDir = Path.Combine(_appDir, "SkinBackups");
-            var persistentAvatarBackupDir = Path.Combine(_appDir, "AvatarBackups");
-            
-            Directory.CreateDirectory(persistentBackupDir);
-            Directory.CreateDirectory(persistentAvatarBackupDir);
-            
-            // Final backup pass - save ONLY the current user's skin
-            var userCacheSkinPath = Path.Combine(cachedSkinsDir, userSkinFile);
-            if (File.Exists(userCacheSkinPath))
-            {
-                try
-                {
-                    var content = File.ReadAllText(userCacheSkinPath);
-                    if (IsValidSkinData(content))
-                    {
-                        _skinBackups[userSkinFile] = content;
-                        File.WriteAllText(Path.Combine(persistentBackupDir, userSkinFile), content);
-                        Logger.Success("Skin", $"✓ Final backup saved for your skin");
-                    }
-                }
-                catch { }
-            }
-            
-            // Also backup current user's avatar preview
-            var userCacheAvatarPath = Path.Combine(cachedAvatarDir, userAvatarFile);
-            if (File.Exists(userCacheAvatarPath))
-            {
-                try
-                {
-                    File.Copy(userCacheAvatarPath, Path.Combine(persistentAvatarBackupDir, userAvatarFile), overwrite: true);
-                    Logger.Info("Skin", $"Backed up your avatar preview");
-                }
-                catch { }
-            }
-            
-            Logger.Info("Skin", "Skin protection cleanup complete - your edits are saved!");
-        }
-        catch (Exception ex)
-        {
-            Logger.Error("Skin", $"Error in skin cleanup: {ex.Message}");
-        }
-    }
-    
-    #endregion
 
     private void SendGameStateEvent(string state, int? exitCode = null)
     {
@@ -4347,128 +4371,6 @@ del ""%~f0""
         Logger.Info("Config", $"Auth domain set to: {domain}");
         return true;
     }
-    
-    // Skin configuration methods
-    private string GetSkinConfigPath()
-    {
-        return Path.Combine(_appDir, "skin_config.json");
-    }
-    
-    /// <summary>
-    /// Gets the cached skin configuration for the current user.
-    /// This is stored in the launcher data directory and can be applied to any instance.
-    /// </summary>
-    public SkinConfig? GetSkinConfig()
-    {
-        try
-        {
-            var path = GetSkinConfigPath();
-            if (!File.Exists(path))
-            {
-                Logger.Info("Skin", "No cached skin config found");
-                return null;
-            }
-            
-            var json = File.ReadAllText(path);
-            var config = JsonSerializer.Deserialize<SkinConfig>(json, JsonOptions);
-            Logger.Info("Skin", $"Loaded skin config for {config?.Name ?? "unknown"}");
-            return config;
-        }
-        catch (Exception ex)
-        {
-            Logger.Error("Skin", $"Failed to load skin config: {ex.Message}");
-            return null;
-        }
-    }
-    
-    /// <summary>
-    /// Saves the skin configuration to the launcher data directory cache.
-    /// </summary>
-    public bool SaveSkinConfig(SkinConfig config)
-    {
-        try
-        {
-            var path = GetSkinConfigPath();
-            var json = JsonSerializer.Serialize(config, new JsonSerializerOptions
-            {
-                PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-                WriteIndented = true
-            });
-            File.WriteAllText(path, json);
-            Logger.Success("Skin", $"Saved skin config for {config.Name ?? "unknown"}");
-            return true;
-        }
-        catch (Exception ex)
-        {
-            Logger.Error("Skin", $"Failed to save skin config: {ex.Message}");
-            return false;
-        }
-    }
-    
-    /// <summary>
-    /// Reads the skin configuration from a specific game instance's UserData folder.
-    /// </summary>
-    public SkinConfig? GetInstanceSkinConfig(string branch, int version)
-    {
-        try
-        {
-            var normalizedBranch = NormalizeVersionType(branch);
-            var versionPath = ResolveInstancePath(normalizedBranch, version, preferExisting: true);
-            var skinPath = Path.Combine(versionPath, "UserData", "skin.json");
-            
-            if (!File.Exists(skinPath))
-            {
-                Logger.Info("Skin", $"No skin config in instance: {skinPath}");
-                return null;
-            }
-            
-            var json = File.ReadAllText(skinPath);
-            var config = JsonSerializer.Deserialize<SkinConfig>(json, JsonOptions);
-            Logger.Info("Skin", $"Read skin config from instance: {skinPath}");
-            return config;
-        }
-        catch (Exception ex)
-        {
-            Logger.Error("Skin", $"Failed to read instance skin config: {ex.Message}");
-            return null;
-        }
-    }
-    
-    /// <summary>
-    /// Applies the cached skin configuration to a specific game instance.
-    /// </summary>
-    public bool ApplySkinToInstance(string branch, int version)
-    {
-        try
-        {
-            var config = GetSkinConfig();
-            if (config == null)
-            {
-                Logger.Warning("Skin", "No cached skin config to apply");
-                return false;
-            }
-            
-            var normalizedBranch = NormalizeVersionType(branch);
-            var versionPath = ResolveInstancePath(normalizedBranch, version, preferExisting: true);
-            var userDataPath = Path.Combine(versionPath, "UserData");
-            Directory.CreateDirectory(userDataPath);
-            
-            var skinPath = Path.Combine(userDataPath, "skin.json");
-            var json = JsonSerializer.Serialize(config, new JsonSerializerOptions
-            {
-                PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-                WriteIndented = true
-            });
-            File.WriteAllText(skinPath, json);
-            Logger.Success("Skin", $"Applied skin config to instance: {skinPath}");
-            return true;
-        }
-        catch (Exception ex)
-        {
-            Logger.Error("Skin", $"Failed to apply skin to instance: {ex.Message}");
-            return false;
-        }
-    }
 
     /// <summary>
     /// Gets the list of available background filenames
@@ -4732,6 +4634,516 @@ del ""%~f0""
     {
         return InstallModFileToInstanceAsync(modId, fileId, branch, version);
     }
+    
+    /// <summary>
+    /// Installs a local mod file (JAR) to the specified instance by copying it to the mods folder.
+    /// Also attempts to look up mod info on CurseForge using fingerprinting.
+    /// Creates the mods directory if the instance doesn't exist yet.
+    /// </summary>
+    public async Task<bool> InstallLocalModFile(string sourcePath, string branch, int version)
+    {
+        try
+        {
+            if (!File.Exists(sourcePath))
+            {
+                Logger.Error("Mods", $"Source file not found: {sourcePath}");
+                return false;
+            }
+            
+            var fileName = Path.GetFileName(sourcePath);
+            
+            // Get the target instance path and create mods directory
+            string resolvedBranch = string.IsNullOrWhiteSpace(branch) ? _config.VersionType : branch;
+            
+            // Try to find existing instance, or use default path
+            var existingPath = FindExistingInstancePath(resolvedBranch, version);
+            string versionPath;
+            
+            if (!string.IsNullOrWhiteSpace(existingPath) && Directory.Exists(existingPath))
+            {
+                versionPath = existingPath;
+            }
+            else
+            {
+                // Instance doesn't exist yet - use the default path and create the directory
+                versionPath = GetInstancePath(resolvedBranch, version);
+                Logger.Info("Mods", $"Instance not found, creating mod directory at: {versionPath}");
+            }
+            
+            string modsPath = GetModsPath(versionPath);
+            
+            var destPath = Path.Combine(modsPath, fileName);
+            
+            // Copy the file
+            File.Copy(sourcePath, destPath, overwrite: true);
+            Logger.Success("Mods", $"Copied local mod: {fileName}");
+            
+            // Generate a local ID based on filename
+            var localId = $"local-{Path.GetFileNameWithoutExtension(fileName)}";
+            var modName = Path.GetFileNameWithoutExtension(fileName);
+            
+            // Try to extract version from filename (common patterns: ModName-1.0.0, ModName_v1.2)
+            var versionMatch = System.Text.RegularExpressions.Regex.Match(modName, @"[-_]v?(\d+(?:\.\d+)*(?:-\w+)?)\s*$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            string modVersion = versionMatch.Success ? versionMatch.Groups[1].Value : "1.0";
+            
+            // Clean up the mod name (remove version suffix if found)
+            if (versionMatch.Success)
+            {
+                modName = modName.Substring(0, versionMatch.Index).TrimEnd('-', '_', ' ');
+            }
+            
+            // Replace underscores/hyphens with spaces for display
+            modName = modName.Replace('_', ' ').Replace('-', ' ');
+            
+            // Create new mod entry
+            var newMod = new InstalledMod
+            {
+                Id = localId,
+                Name = modName,
+                FileName = fileName,
+                Enabled = true,
+                Version = modVersion,
+                Author = "",
+                Description = ""
+            };
+            
+            // Try to look up mod info on CurseForge using fingerprint
+            try
+            {
+                var cfInfo = await LookupModOnCurseForgeAsync(destPath);
+                if (cfInfo != null)
+                {
+                    Logger.Success("Mods", $"Found CurseForge match for {fileName}: {cfInfo.Name}");
+                    newMod.CurseForgeId = cfInfo.ModId;
+                    newMod.FileId = cfInfo.FileId;
+                    newMod.Name = cfInfo.Name ?? modName;
+                    newMod.Version = cfInfo.Version ?? modVersion;
+                    newMod.Author = cfInfo.Author ?? "";
+                    newMod.Description = cfInfo.Description ?? "";
+                    newMod.IconUrl = cfInfo.IconUrl ?? "";
+                    newMod.Id = cfInfo.ModId; // Use CurseForge ID instead of local ID
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Info("Mods", $"Could not look up mod on CurseForge: {ex.Message}");
+            }
+            
+            // Update manifest with lock to prevent concurrent write issues
+            await _modManifestLock.WaitAsync();
+            try
+            {
+                var manifestPath = Path.Combine(modsPath, "manifest.json");
+                var installedMods = new List<InstalledMod>();
+                
+                if (File.Exists(manifestPath))
+                {
+                    try
+                    {
+                        var manifestJson = File.ReadAllText(manifestPath);
+                        installedMods = JsonSerializer.Deserialize<List<InstalledMod>>(manifestJson, JsonOptions) ?? new List<InstalledMod>();
+                    }
+                    catch { }
+                }
+                
+                // Remove existing entry if updating
+                installedMods.RemoveAll(m => m.Id == localId || m.FileName == fileName || (newMod.CurseForgeId != null && m.CurseForgeId == newMod.CurseForgeId));
+                
+                installedMods.Add(newMod);
+                
+                var manifestOptions = new JsonSerializerOptions(JsonOptions) { WriteIndented = true };
+                File.WriteAllText(manifestPath, JsonSerializer.Serialize(installedMods, manifestOptions));
+            }
+            finally
+            {
+                _modManifestLock.Release();
+            }
+            
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("Mods", $"Failed to install local mod: {ex.Message}");
+            return false;
+        }
+    }
+    
+    /// <summary>
+    /// CurseForge mod info from fingerprint lookup
+    /// </summary>
+    private class CurseForgeModInfo
+    {
+        public string ModId { get; set; } = "";
+        public string FileId { get; set; } = "";
+        public string? Name { get; set; }
+        public string? Version { get; set; }
+        public string? Author { get; set; }
+        public string? Description { get; set; }
+        public string? IconUrl { get; set; }
+    }
+    
+    /// <summary>
+    /// Computes the CurseForge fingerprint (MurmurHash2) for a file.
+    /// CurseForge uses a normalized version of the file (whitespace removed for certain file types).
+    /// </summary>
+    private static uint ComputeCurseForgeFingerprint(string filePath)
+    {
+        var bytes = File.ReadAllBytes(filePath);
+        
+        // CurseForge removes whitespace from the file for fingerprinting
+        // Filter out whitespace bytes (0x09, 0x0A, 0x0D, 0x20)
+        var filtered = bytes.Where(b => b != 0x09 && b != 0x0A && b != 0x0D && b != 0x20).ToArray();
+        
+        return MurmurHash2(filtered, 1);
+    }
+    
+    /// <summary>
+    /// MurmurHash2 implementation matching CurseForge's fingerprinting.
+    /// </summary>
+    private static uint MurmurHash2(byte[] data, uint seed)
+    {
+        const uint m = 0x5bd1e995;
+        const int r = 24;
+        
+        uint h = seed ^ (uint)data.Length;
+        int len = data.Length;
+        int i = 0;
+        
+        while (len >= 4)
+        {
+            uint k = BitConverter.ToUInt32(data, i);
+            k *= m;
+            k ^= k >> r;
+            k *= m;
+            h *= m;
+            h ^= k;
+            i += 4;
+            len -= 4;
+        }
+        
+        switch (len)
+        {
+            case 3: h ^= (uint)data[i + 2] << 16; goto case 2;
+            case 2: h ^= (uint)data[i + 1] << 8; goto case 1;
+            case 1: h ^= data[i]; h *= m; break;
+        }
+        
+        h ^= h >> 13;
+        h *= m;
+        h ^= h >> 15;
+        
+        return h;
+    }
+    
+    /// <summary>
+    /// Looks up a mod file on CurseForge using its fingerprint.
+    /// </summary>
+    private async Task<CurseForgeModInfo?> LookupModOnCurseForgeAsync(string filePath)
+    {
+        try
+        {
+            var fingerprint = ComputeCurseForgeFingerprint(filePath);
+            Logger.Info("Mods", $"Looking up file with fingerprint: {fingerprint}");
+            
+            // Call CurseForge fingerprint API
+            var requestBody = new { fingerprints = new[] { fingerprint } };
+            var requestJson = JsonSerializer.Serialize(requestBody);
+            
+            using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.curseforge.com/v1/fingerprints");
+            request.Headers.Add("x-api-key", "$2a$10$1W4EvLWzLe4.RM1kcxW9n.vxmBPEYcg9dvpT4r5OAlkQk/.6jQE4e");
+            request.Content = new StringContent(requestJson, System.Text.Encoding.UTF8, "application/json");
+            
+            using var response = await HttpClient.SendAsync(request);
+            if (!response.IsSuccessStatusCode)
+            {
+                Logger.Warning("Mods", $"CurseForge fingerprint lookup failed: {response.StatusCode}");
+                return null;
+            }
+            
+            var json = await response.Content.ReadAsStringAsync();
+            using var doc = JsonDocument.Parse(json);
+            
+            var data = doc.RootElement.GetProperty("data");
+            var exactMatches = data.GetProperty("exactMatches");
+            
+            if (exactMatches.GetArrayLength() == 0)
+            {
+                Logger.Info("Mods", "No exact fingerprint match found on CurseForge");
+                return null;
+            }
+            
+            var match = exactMatches[0];
+            var file = match.GetProperty("file");
+            var modId = file.GetProperty("modId").GetInt32();
+            var fileId = file.GetProperty("id").GetInt32();
+            var displayName = file.TryGetProperty("displayName", out var dn) ? dn.GetString() : null;
+            
+            // Get mod details for more info
+            var modUrl = $"https://api.curseforge.com/v1/mods/{modId}";
+            using var modRequest = new HttpRequestMessage(HttpMethod.Get, modUrl);
+            modRequest.Headers.Add("x-api-key", "$2a$10$1W4EvLWzLe4.RM1kcxW9n.vxmBPEYcg9dvpT4r5OAlkQk/.6jQE4e");
+            
+            using var modResponse = await HttpClient.SendAsync(modRequest);
+            if (!modResponse.IsSuccessStatusCode)
+            {
+                // Return basic info if mod details fail
+                return new CurseForgeModInfo
+                {
+                    ModId = modId.ToString(),
+                    FileId = fileId.ToString(),
+                    Version = displayName
+                };
+            }
+            
+            var modJson = await modResponse.Content.ReadAsStringAsync();
+            var modData = JsonSerializer.Deserialize<CurseForgeModResponse>(modJson, JsonOptions);
+            var mod = modData?.Data;
+            
+            return new CurseForgeModInfo
+            {
+                ModId = modId.ToString(),
+                FileId = fileId.ToString(),
+                Name = mod?.Name,
+                Version = displayName,
+                Author = mod?.Authors?.FirstOrDefault()?.Name,
+                Description = mod?.Summary,
+                IconUrl = mod?.Logo?.ThumbnailUrl
+            };
+        }
+        catch (Exception ex)
+        {
+            Logger.Warning("Mods", $"CurseForge lookup error: {ex.Message}");
+            return null;
+        }
+    }
+    
+    /// <summary>
+    /// Exports the mod list for an instance as a JSON file.
+    /// Returns the path to the exported file.
+    /// </summary>
+    public string? ExportModList(string branch, int version)
+    {
+        try
+        {
+            string resolvedBranch = string.IsNullOrWhiteSpace(branch) ? _config.VersionType : branch;
+            string versionPath = ResolveInstancePath(resolvedBranch, version, preferExisting: true);
+            string modsPath = GetModsPath(versionPath);
+            var manifestPath = Path.Combine(modsPath, "manifest.json");
+            
+            if (!File.Exists(manifestPath))
+            {
+                Logger.Warning("Mods", "No manifest found to export");
+                return null;
+            }
+            
+            var manifestJson = File.ReadAllText(manifestPath);
+            var installedMods = JsonSerializer.Deserialize<List<InstalledMod>>(manifestJson, JsonOptions) ?? new List<InstalledMod>();
+            
+            // Create export data with only CurseForge mods that can be re-downloaded
+            var exportData = installedMods
+                .Where(m => !string.IsNullOrEmpty(m.CurseForgeId) && !string.IsNullOrEmpty(m.FileId))
+                .Select(m => new
+                {
+                    curseForgeId = m.CurseForgeId,
+                    fileId = m.FileId,
+                    name = m.Name,
+                    version = m.Version
+                })
+                .ToList();
+            
+            if (exportData.Count == 0)
+            {
+                Logger.Warning("Mods", "No CurseForge mods to export");
+                return null;
+            }
+            
+            // Save to Downloads folder
+            var downloadsPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
+            var exportFileName = $"HyPrism-ModList-{DateTime.Now:yyyyMMdd-HHmmss}.json";
+            var exportPath = Path.Combine(downloadsPath, exportFileName);
+            
+            var exportOptions = new JsonSerializerOptions { WriteIndented = true };
+            File.WriteAllText(exportPath, JsonSerializer.Serialize(exportData, exportOptions));
+            
+            Logger.Success("Mods", $"Exported {exportData.Count} mods to {exportPath}");
+            return exportPath;
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("Mods", $"Failed to export mod list: {ex.Message}");
+            return null;
+        }
+    }
+    
+    /// <summary>
+    /// Gets the last export path or Desktop as default.
+    /// </summary>
+    public string GetLastExportPath()
+    {
+        if (!string.IsNullOrWhiteSpace(_config.LastExportPath) && Directory.Exists(_config.LastExportPath))
+        {
+            return _config.LastExportPath;
+        }
+        return Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
+    }
+    
+    /// <summary>
+    /// Exports mods to a specified directory with the given export type.
+    /// ExportType: "modlist" for JSON file, "zip" for ZIP archive of all mod files.
+    /// Returns the path to the exported file or null on failure.
+    /// </summary>
+    public Task<string?> ExportModsToFolder(string branch, int version, string targetFolder, string exportType)
+    {
+        try
+        {
+            string resolvedBranch = string.IsNullOrWhiteSpace(branch) ? _config.VersionType : branch;
+            string versionPath = ResolveInstancePath(resolvedBranch, version, preferExisting: true);
+            string modsPath = GetModsPath(versionPath);
+            var manifestPath = Path.Combine(modsPath, "manifest.json");
+            
+            // Save the export path for next time
+            _config.LastExportPath = targetFolder;
+            SaveConfig();
+            
+            var timestamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
+            
+            if (exportType == "zip")
+            {
+                // Export as ZIP file containing all mod files
+                var modFiles = Directory.Exists(modsPath) 
+                    ? Directory.GetFiles(modsPath).Where(f => !f.EndsWith(".json")).ToArray()
+                    : Array.Empty<string>();
+                
+                if (modFiles.Length == 0)
+                {
+                    Logger.Warning("Mods", "No mod files to export as ZIP");
+                    return Task.FromResult<string?>(null);
+                }
+                
+                var zipFileName = $"HyPrism-Mods-{timestamp}.zip";
+                var zipPath = Path.Combine(targetFolder, zipFileName);
+                
+                // Create ZIP archive
+                using (var archive = System.IO.Compression.ZipFile.Open(zipPath, System.IO.Compression.ZipArchiveMode.Create))
+                {
+                    foreach (var modFile in modFiles)
+                    {
+                        archive.CreateEntryFromFile(modFile, Path.GetFileName(modFile));
+                    }
+                    
+                    // Also include manifest.json if it exists
+                    if (File.Exists(manifestPath))
+                    {
+                        archive.CreateEntryFromFile(manifestPath, "manifest.json");
+                    }
+                }
+                
+                Logger.Success("Mods", $"Exported {modFiles.Length} mod files to {zipPath}");
+                return Task.FromResult<string?>(zipPath);
+            }
+            else
+            {
+                // Export as JSON modlist (default)
+                if (!File.Exists(manifestPath))
+                {
+                    Logger.Warning("Mods", "No manifest found to export");
+                    return Task.FromResult<string?>(null);
+                }
+                
+                var manifestJson = File.ReadAllText(manifestPath);
+                var installedMods = JsonSerializer.Deserialize<List<InstalledMod>>(manifestJson, JsonOptions) ?? new List<InstalledMod>();
+                
+                // Create export data with only CurseForge mods that can be re-downloaded
+                var exportData = installedMods
+                    .Where(m => !string.IsNullOrEmpty(m.CurseForgeId) && !string.IsNullOrEmpty(m.FileId))
+                    .Select(m => new
+                    {
+                        curseForgeId = m.CurseForgeId,
+                        fileId = m.FileId,
+                        name = m.Name,
+                        version = m.Version
+                    })
+                    .ToList();
+                
+                if (exportData.Count == 0)
+                {
+                    Logger.Warning("Mods", "No CurseForge mods to export as modlist");
+                    return Task.FromResult<string?>(null);
+                }
+                
+                var exportFileName = $"HyPrism-ModList-{timestamp}.json";
+                var exportPath = Path.Combine(targetFolder, exportFileName);
+                
+                var exportOptions = new JsonSerializerOptions { WriteIndented = true };
+                File.WriteAllText(exportPath, JsonSerializer.Serialize(exportData, exportOptions));
+                
+                Logger.Success("Mods", $"Exported {exportData.Count} mods to {exportPath}");
+                return Task.FromResult<string?>(exportPath);
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("Mods", $"Failed to export mods: {ex.Message}");
+            return Task.FromResult<string?>(null);
+        }
+    }
+    
+    /// <summary>
+    /// Imports and downloads mods from a mod list JSON file.
+    /// Returns the number of mods successfully imported.
+    /// </summary>
+    public async Task<int> ImportModList(string modListPath, string branch, int version)
+    {
+        try
+        {
+            if (!File.Exists(modListPath))
+            {
+                Logger.Error("Mods", $"Mod list file not found: {modListPath}");
+                return 0;
+            }
+            
+            var json = File.ReadAllText(modListPath);
+            var modList = JsonSerializer.Deserialize<List<ModListEntry>>(json, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+            
+            if (modList == null || modList.Count == 0)
+            {
+                Logger.Warning("Mods", "No mods found in import file");
+                return 0;
+            }
+            
+            int successCount = 0;
+            foreach (var mod in modList)
+            {
+                if (string.IsNullOrEmpty(mod.CurseForgeId) || string.IsNullOrEmpty(mod.FileId))
+                {
+                    Logger.Warning("Mods", $"Skipping mod with missing IDs: {mod.Name ?? "Unknown"}");
+                    continue;
+                }
+                
+                try
+                {
+                    var success = await InstallModFileToInstanceAsync(mod.CurseForgeId, mod.FileId, branch, version);
+                    if (success)
+                    {
+                        successCount++;
+                        Logger.Success("Mods", $"Imported: {mod.Name ?? mod.CurseForgeId}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logger.Warning("Mods", $"Failed to import {mod.Name ?? mod.CurseForgeId}: {ex.Message}");
+                }
+            }
+            
+            Logger.Success("Mods", $"Imported {successCount}/{modList.Count} mods");
+            return successCount;
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("Mods", $"Failed to import mod list: {ex.Message}");
+            return 0;
+        }
+    }
 
     public Task<string?> BrowseFolder(string? initialPath = null)
     {
@@ -4789,35 +5201,94 @@ del ""%~f0""
         
         string modsPath = GetModsPath(versionPath);
         
-        if (Directory.Exists(modsPath))
+        if (!Directory.Exists(modsPath)) return result;
+        
+        // First, load mods from manifest
+        var manifestMods = new Dictionary<string, InstalledMod>(StringComparer.OrdinalIgnoreCase);
+        string manifestPath = Path.Combine(modsPath, "manifest.json");
+        
+        if (File.Exists(manifestPath))
         {
-            string manifestPath = Path.Combine(modsPath, "manifest.json");
-            if (File.Exists(manifestPath))
+            try
             {
-                try
+                var json = File.ReadAllText(manifestPath);
+                var mods = JsonSerializer.Deserialize<List<InstalledMod>>(json, JsonOptions) ?? new List<InstalledMod>();
+                foreach (var mod in mods)
                 {
-                    var json = File.ReadAllText(manifestPath);
-                    var mods = JsonSerializer.Deserialize<List<InstalledMod>>(json, JsonOptions) ?? new List<InstalledMod>();
                     // Normalize IDs and ensure CurseForgeId and screenshots are populated
-                    foreach (var mod in mods)
+                    if (!string.IsNullOrEmpty(mod.CurseForgeId) && !mod.Id.StartsWith("cf-", StringComparison.OrdinalIgnoreCase))
                     {
-                        if (!string.IsNullOrEmpty(mod.CurseForgeId) && !mod.Id.StartsWith("cf-", StringComparison.OrdinalIgnoreCase))
-                        {
-                            mod.Id = $"cf-{mod.CurseForgeId}";
-                        }
-                        else if (string.IsNullOrEmpty(mod.CurseForgeId) && mod.Id.StartsWith("cf-", StringComparison.OrdinalIgnoreCase))
-                        {
-                            mod.CurseForgeId = mod.Id.Replace("cf-", "");
-                        }
-                        mod.Screenshots ??= new List<CurseForgeScreenshot>();
+                        mod.Id = $"cf-{mod.CurseForgeId}";
                     }
-                    return mods;
+                    else if (string.IsNullOrEmpty(mod.CurseForgeId) && mod.Id.StartsWith("cf-", StringComparison.OrdinalIgnoreCase))
+                    {
+                        mod.CurseForgeId = mod.Id.Replace("cf-", "");
+                    }
+                    mod.Screenshots ??= new List<CurseForgeScreenshot>();
+                    
+                    // Track by filename for merging with JAR scan
+                    if (!string.IsNullOrEmpty(mod.FileName))
+                    {
+                        manifestMods[mod.FileName] = mod;
+                    }
                 }
-                catch { }
+            }
+            catch (Exception ex)
+            {
+                Logger.Warning("Mods", $"Failed to read manifest: {ex.Message}");
             }
         }
         
-        return result;
+        // Scan for actual JAR files in the mods folder
+        var jarFiles = Directory.GetFiles(modsPath, "*.jar", SearchOption.TopDirectoryOnly);
+        var foundMods = new List<InstalledMod>();
+        var needsManifestUpdate = false;
+        
+        foreach (var jarPath in jarFiles)
+        {
+            var fileName = Path.GetFileName(jarPath);
+            
+            // Check if this JAR is already in manifest
+            if (manifestMods.TryGetValue(fileName, out var existingMod))
+            {
+                foundMods.Add(existingMod);
+            }
+            else
+            {
+                // JAR exists but not in manifest - add it as a local mod
+                Logger.Info("Mods", $"Found untracked mod: {fileName}");
+                var localMod = new InstalledMod
+                {
+                    Id = $"local-{Path.GetFileNameWithoutExtension(fileName)}",
+                    Name = Path.GetFileNameWithoutExtension(fileName),
+                    FileName = fileName,
+                    Enabled = true,
+                    Version = "Local",
+                    Author = "Local",
+                    Description = "Manually installed mod file"
+                };
+                foundMods.Add(localMod);
+                manifestMods[fileName] = localMod;
+                needsManifestUpdate = true;
+            }
+        }
+        
+        // Update manifest if we found untracked mods
+        if (needsManifestUpdate)
+        {
+            try
+            {
+                var manifestOptions = new JsonSerializerOptions(JsonOptions) { WriteIndented = true };
+                File.WriteAllText(manifestPath, JsonSerializer.Serialize(manifestMods.Values.ToList(), manifestOptions));
+                Logger.Info("Mods", "Updated manifest with untracked mods");
+            }
+            catch (Exception ex)
+            {
+                Logger.Warning("Mods", $"Failed to update manifest: {ex.Message}");
+            }
+        }
+        
+        return foundMods;
     }
 
     public async Task<bool> InstallModFileToInstanceAsync(string modId, string fileId, string branch, int version)
@@ -4875,43 +5346,70 @@ del ""%~f0""
             
             Logger.Success("Mods", $"Installed {fileName}");
             
-            // Update manifest
-            var manifestPath = Path.Combine(modsPath, "manifest.json");
-            var installedMods = new List<InstalledMod>();
-            
-            if (File.Exists(manifestPath))
+            // Update manifest - use lock to prevent concurrent writes from corrupting data
+            await _modManifestLock.WaitAsync();
+            try
             {
-                try
+                var manifestPath = Path.Combine(modsPath, "manifest.json");
+                var installedMods = new List<InstalledMod>();
+                
+                if (File.Exists(manifestPath))
                 {
-                    var manifestJson = File.ReadAllText(manifestPath);
-                    installedMods = JsonSerializer.Deserialize<List<InstalledMod>>(manifestJson, JsonOptions) ?? new List<InstalledMod>();
+                    try
+                    {
+                        var manifestJson = File.ReadAllText(manifestPath);
+                        installedMods = JsonSerializer.Deserialize<List<InstalledMod>>(manifestJson, JsonOptions) ?? new List<InstalledMod>();
+                    }
+                    catch { }
                 }
-                catch { }
+                
+                // Find and delete old version file if updating/downgrading
+                var existingMod = installedMods.FirstOrDefault(m => m.Id == $"cf-{modId}" || m.CurseForgeId == modId);
+                if (existingMod != null && !string.IsNullOrEmpty(existingMod.FileName) && existingMod.FileName != fileName)
+                {
+                    var oldFilePath = Path.Combine(modsPath, existingMod.FileName);
+                    if (File.Exists(oldFilePath))
+                    {
+                        try
+                        {
+                            File.Delete(oldFilePath);
+                            Logger.Info("Mods", $"Deleted old version: {existingMod.FileName}");
+                        }
+                        catch (Exception ex)
+                        {
+                            Logger.Warning("Mods", $"Failed to delete old mod file: {ex.Message}");
+                        }
+                    }
+                }
+                
+                // Remove existing entry for this mod if updating
+                installedMods.RemoveAll(m => m.Id == $"cf-{modId}" || m.CurseForgeId == modId);
+                
+                // Add new entry
+                installedMods.Add(new InstalledMod
+                {
+                    Id = $"cf-{modId}",
+                    CurseForgeId = modId,
+                    FileId = fileId,
+                    Name = modName,
+                    FileName = fileName,
+                    Slug = modSlug,
+                    Enabled = true,
+                    Version = fileInfo.DisplayName ?? fileInfo.FileName ?? fileId,
+                    Author = modAuthor,
+                    Description = modDescription,
+                    IconUrl = iconUrl,
+                    FileDate = fileInfo.FileDate ?? "",
+                    Screenshots = screenshots
+                });
+                
+                var manifestOptions = new JsonSerializerOptions(JsonOptions) { WriteIndented = true };
+                File.WriteAllText(manifestPath, JsonSerializer.Serialize(installedMods, manifestOptions));
             }
-            
-            // Remove existing entry for this mod if updating
-            installedMods.RemoveAll(m => m.Id == $"cf-{modId}" || m.CurseForgeId == modId);
-            
-            // Add new entry
-            installedMods.Add(new InstalledMod
+            finally
             {
-                Id = $"cf-{modId}",
-                CurseForgeId = modId,
-                FileId = fileId,
-                Name = modName,
-                FileName = fileName,
-                Slug = modSlug,
-                Enabled = true,
-                Version = fileInfo.DisplayName ?? fileInfo.FileName ?? fileId,
-                Author = modAuthor,
-                Description = modDescription,
-                IconUrl = iconUrl,
-                FileDate = fileInfo.FileDate ?? "",
-                Screenshots = screenshots
-            });
-            
-            var manifestOptions = new JsonSerializerOptions(JsonOptions) { WriteIndented = true };
-            File.WriteAllText(manifestPath, JsonSerializer.Serialize(installedMods, manifestOptions));
+                _modManifestLock.Release();
+            }
             
             return true;
         }
@@ -5032,13 +5530,220 @@ del ""%~f0""
             return false;
         }
     }
-
-    public Task<List<ModUpdate>> CheckInstanceModUpdatesAsync(string branch, int version)
+    
+    /// <summary>
+    /// Exports an instance (UserData folder) as a ZIP file to the Downloads folder.
+    /// Returns the path to the exported file.
+    /// </summary>
+    public string? ExportInstance(string branch, int version)
     {
-        return Task.FromResult(new List<ModUpdate>());
+        try
+        {
+            string resolvedBranch = string.IsNullOrWhiteSpace(branch) ? _config.VersionType : branch;
+            string versionPath = ResolveInstancePath(resolvedBranch, version, preferExisting: true);
+            string userDataPath = Path.Combine(versionPath, "UserData");
+            
+            if (!Directory.Exists(userDataPath))
+            {
+                Logger.Warning("Instance", "No UserData folder to export");
+                return null;
+            }
+            
+            // Create export filename
+            var versionLabel = version == 0 ? "latest" : $"v{version}";
+            var exportFileName = $"HyPrism-{resolvedBranch}-{versionLabel}-{DateTime.Now:yyyyMMdd-HHmmss}.zip";
+            var downloadsPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
+            var exportPath = Path.Combine(downloadsPath, exportFileName);
+            
+            // Create ZIP file
+            Logger.Info("Instance", $"Exporting instance to: {exportPath}");
+            
+            if (File.Exists(exportPath))
+            {
+                File.Delete(exportPath);
+            }
+            
+            System.IO.Compression.ZipFile.CreateFromDirectory(userDataPath, exportPath, System.IO.Compression.CompressionLevel.Optimal, includeBaseDirectory: true);
+            
+            Logger.Success("Instance", $"Exported instance: {exportFileName}");
+            return exportPath;
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("Instance", $"Failed to export instance: {ex.Message}");
+            return null;
+        }
+    }
+    
+    /// <summary>
+    /// Gets detailed information about all installed instances.
+    /// </summary>
+    public List<InstalledVersionInfo> GetInstalledVersionsDetailed()
+    {
+        var result = new List<InstalledVersionInfo>();
+        
+        foreach (var branchName in new[] { "release", "pre-release" })
+        {
+            var versions = GetInstalledVersionsForBranch(branchName);
+            foreach (var version in versions)
+            {
+                try
+                {
+                    var versionPath = ResolveInstancePath(branchName, version, preferExisting: true);
+                    var userDataPath = Path.Combine(versionPath, "UserData");
+                    
+                    long size = 0;
+                    if (Directory.Exists(userDataPath))
+                    {
+                        size = GetDirectorySize(userDataPath);
+                    }
+                    
+                    result.Add(new InstalledVersionInfo
+                    {
+                        Version = version,
+                        Branch = branchName,
+                        Path = versionPath,
+                        UserDataSize = size,
+                        HasUserData = Directory.Exists(userDataPath)
+                    });
+                }
+                catch { }
+            }
+        }
+        
+        return result.OrderByDescending(v => v.Version).ToList();
+    }
+    
+    private long GetDirectorySize(string path)
+    {
+        long size = 0;
+        try
+        {
+            foreach (var file in Directory.GetFiles(path, "*", SearchOption.AllDirectories))
+            {
+                try
+                {
+                    size += new FileInfo(file).Length;
+                }
+                catch { }
+            }
+        }
+        catch { }
+        return size;
     }
 
-    public Task<List<ModUpdate>> CheckInstanceModUpdates(string branch, int version)
+    public async Task<List<InstalledMod>> CheckInstanceModUpdatesAsync(string branch, int version)
+    {
+        var modsWithUpdates = new List<InstalledMod>();
+        
+        try
+        {
+            string resolvedBranch = string.IsNullOrWhiteSpace(branch) ? _config.VersionType : branch;
+            var existingPath = FindExistingInstancePath(resolvedBranch, version);
+            if (string.IsNullOrWhiteSpace(existingPath) || !Directory.Exists(existingPath))
+            {
+                Logger.Warning("Mods", $"Instance not found for update check: {resolvedBranch} v{version}");
+                return modsWithUpdates;
+            }
+            
+            string versionPath = existingPath;
+            string modsPath = GetModsPath(versionPath);
+            var manifestPath = Path.Combine(modsPath, "manifest.json");
+            
+            if (!File.Exists(manifestPath))
+            {
+                Logger.Info("Mods", "No manifest found for update check");
+                return modsWithUpdates;
+            }
+            
+            var manifestJson = File.ReadAllText(manifestPath);
+            var installedMods = JsonSerializer.Deserialize<List<InstalledMod>>(manifestJson, JsonOptions) ?? new List<InstalledMod>();
+            
+            // Filter to only CurseForge mods
+            var curseForgemods = installedMods.Where(m => !string.IsNullOrEmpty(m.CurseForgeId) && !string.IsNullOrEmpty(m.FileId)).ToList();
+            
+            if (curseForgemods.Count == 0)
+            {
+                Logger.Info("Mods", "No CurseForge mods found for update check");
+                return modsWithUpdates;
+            }
+            
+            Logger.Info("Mods", $"Checking updates for {curseForgemods.Count} CurseForge mods");
+            
+            foreach (var mod in curseForgemods)
+            {
+                try
+                {
+                    // Get mod details from CurseForge to find latest file
+                    var url = $"https://api.curseforge.com/v1/mods/{mod.CurseForgeId}";
+                    using var request = new HttpRequestMessage(HttpMethod.Get, url);
+                    request.Headers.Add("x-api-key", "$2a$10$1W4EvLWzLe4.RM1kcxW9n.vxmBPEYcg9dvpT4r5OAlkQk/.6jQE4e");
+                    
+                    using var response = await HttpClient.SendAsync(request);
+                    if (!response.IsSuccessStatusCode) continue;
+                    
+                    var json = await response.Content.ReadAsStringAsync();
+                    var modResponse = JsonSerializer.Deserialize<CurseForgeModResponse>(json, JsonOptions);
+                    var modData = modResponse?.Data;
+                    
+                    if (modData?.LatestFiles == null || modData.LatestFiles.Count == 0) continue;
+                    
+                    // Find the latest file (highest file ID or most recent)
+                    var latestFile = modData.LatestFiles
+                        .OrderByDescending(f => f.FileDate)
+                        .ThenByDescending(f => f.Id)
+                        .FirstOrDefault();
+                    
+                    if (latestFile == null) continue;
+                    
+                    // Compare file IDs - if different, there's an update (or downgrade)
+                    if (latestFile.Id.ToString() != mod.FileId)
+                    {
+                        // Check if it's actually newer (higher file ID = newer usually, but also check date)
+                        if (int.TryParse(mod.FileId, out int currentFileId) && latestFile.Id > currentFileId)
+                        {
+                            Logger.Info("Mods", $"Update available for {mod.Name}: {mod.FileId} -> {latestFile.Id}");
+                            
+                            // Return an InstalledMod with the update info set
+                            var modWithUpdate = new InstalledMod
+                            {
+                                Id = mod.Id,
+                                Name = mod.Name,
+                                Slug = mod.Slug,
+                                Version = mod.Version,
+                                FileId = mod.FileId,
+                                FileName = mod.FileName,
+                                Enabled = mod.Enabled,
+                                Author = mod.Author,
+                                Description = mod.Description,
+                                IconUrl = mod.IconUrl,
+                                CurseForgeId = mod.CurseForgeId,
+                                FileDate = mod.FileDate,
+                                Screenshots = mod.Screenshots,
+                                LatestFileId = latestFile.Id.ToString(),
+                                LatestVersion = latestFile.DisplayName ?? latestFile.FileName ?? "",
+                            };
+                            modsWithUpdates.Add(modWithUpdate);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logger.Warning("Mods", $"Failed to check update for {mod.Name}: {ex.Message}");
+                }
+            }
+            
+            Logger.Info("Mods", $"Found {modsWithUpdates.Count} mods with updates available");
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("Mods", $"Failed to check for mod updates: {ex.Message}");
+        }
+        
+        return modsWithUpdates;
+    }
+
+    public Task<List<InstalledMod>> CheckInstanceModUpdates(string branch, int version)
     {
         return CheckInstanceModUpdatesAsync(branch, version);
     }
@@ -5481,6 +6186,207 @@ del ""%~f0""
             Timestamp = DateTime.UtcNow.ToString("o")
         };
     }
+
+    /// <summary>
+    /// Sets the game language by copying translated language files to the game's language folder.
+    /// Maps launcher locale codes to game locale codes and copies appropriate language files.
+    /// </summary>
+    /// <param name="languageCode">The launcher language code (e.g., "en", "es", "de", "fr")</param>
+    /// <returns>True if language files were successfully copied, false otherwise</returns>
+    public async Task<bool> SetGameLanguageAsync(string languageCode)
+    {
+        try
+        {
+            // Map launcher language codes to game language folder names
+            var languageMapping = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                { "en", "en-US" },
+                { "es", "es-ES" },
+                { "de", "de-DE" },
+                { "fr", "fr-FR" },
+                { "ja", "ja-JP" },
+                { "ko", "ko-KR" },
+                { "pt", "pt-BR" },
+                { "ru", "ru-RU" },
+                { "tr", "tr-TR" },
+                { "uk", "uk-UA" },
+                { "zh", "zh-CN" },
+                { "be", "be-BY" }
+            };
+
+            // Get the game language code
+            if (!languageMapping.TryGetValue(languageCode, out var gameLanguageCode))
+            {
+                Logger.Warning("Language", $"Unknown language code: {languageCode}, defaulting to en-US");
+                gameLanguageCode = "en-US";
+            }
+
+            Logger.Info("Language", $"Setting game language to: {gameLanguageCode}");
+
+            // Find the game language source directory
+            // First check if running from published app (game-lang folder next to executable)
+            var exePath = Process.GetCurrentProcess().MainModule?.FileName;
+            var exeDir = !string.IsNullOrEmpty(exePath) ? Path.GetDirectoryName(exePath) : null;
+            
+            string? sourceLangDir = null;
+            
+            // Check various possible locations
+            var possibleLocations = new List<string>();
+            
+            if (!string.IsNullOrEmpty(exeDir))
+            {
+                possibleLocations.Add(Path.Combine(exeDir, "game-lang", gameLanguageCode));
+                possibleLocations.Add(Path.Combine(exeDir, "..", "Resources", "game-lang", gameLanguageCode)); // macOS bundle
+            }
+            
+            // Development location
+            possibleLocations.Add(Path.Combine(AppContext.BaseDirectory, "game-lang", gameLanguageCode));
+            possibleLocations.Add(Path.Combine(AppContext.BaseDirectory, "assets", "game-lang", gameLanguageCode));
+            
+            foreach (var loc in possibleLocations)
+            {
+                if (Directory.Exists(loc))
+                {
+                    sourceLangDir = loc;
+                    break;
+                }
+            }
+
+            if (sourceLangDir == null)
+            {
+                Logger.Warning("Language", $"Language files not found for {gameLanguageCode}. Checked: {string.Join(", ", possibleLocations)}");
+                return false;
+            }
+
+            Logger.Info("Language", $"Found language files at: {sourceLangDir}");
+
+            // Get all installed game versions and update their language files
+            var branches = new[] { "release", "pre-release" };
+            int copiedCount = 0;
+
+            foreach (var branch in branches)
+            {
+                try
+                {
+                    var versions = await GetVersionListAsync(branch);
+                    foreach (var version in versions)
+                    {
+                        var instancePath = GetInstancePath(branch, version);
+                        var targetLangDir = Path.Combine(instancePath, "Client", "Data", "Shared", "language", gameLanguageCode);
+
+                        if (!Directory.Exists(instancePath))
+                            continue;
+
+                        // Create target language directory
+                        Directory.CreateDirectory(targetLangDir);
+
+                        // Copy all language files
+                        await CopyDirectoryRecursiveAsync(sourceLangDir, targetLangDir);
+                        copiedCount++;
+                        Logger.Info("Language", $"Copied language files to: {targetLangDir}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logger.Warning("Language", $"Failed to update language for branch {branch}: {ex.Message}");
+                }
+            }
+
+            // Also update "latest" instance if it exists
+            foreach (var branch in branches)
+            {
+                try
+                {
+                    var latestPath = GetLatestInstancePath(branch);
+                    if (Directory.Exists(latestPath))
+                    {
+                        var targetLangDir = Path.Combine(latestPath, "Client", "Data", "Shared", "language", gameLanguageCode);
+                        Directory.CreateDirectory(targetLangDir);
+                        await CopyDirectoryRecursiveAsync(sourceLangDir, targetLangDir);
+                        copiedCount++;
+                        Logger.Info("Language", $"Copied language files to latest: {targetLangDir}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logger.Warning("Language", $"Failed to update latest language for branch {branch}: {ex.Message}");
+                }
+            }
+
+            Logger.Info("Language", $"Successfully updated language files for {copiedCount} game instance(s)");
+            return copiedCount > 0;
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("Language", $"Failed to set game language: {ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Recursively copies all files from source directory to target directory.
+    /// </summary>
+    private async Task CopyDirectoryRecursiveAsync(string sourceDir, string targetDir)
+    {
+        Directory.CreateDirectory(targetDir);
+
+        // Copy files
+        foreach (var file in Directory.GetFiles(sourceDir))
+        {
+            var fileName = Path.GetFileName(file);
+            var targetPath = Path.Combine(targetDir, fileName);
+            await Task.Run(() => File.Copy(file, targetPath, overwrite: true));
+        }
+
+        // Copy subdirectories
+        foreach (var dir in Directory.GetDirectories(sourceDir))
+        {
+            var dirName = Path.GetFileName(dir);
+            var targetSubDir = Path.Combine(targetDir, dirName);
+            await CopyDirectoryRecursiveAsync(dir, targetSubDir);
+        }
+    }
+
+    /// <summary>
+    /// Gets the list of available game languages that have translation files.
+    /// </summary>
+    public List<string> GetAvailableGameLanguages()
+    {
+        var languages = new List<string>();
+        
+        // Check for game-lang folders
+        var exePath = Process.GetCurrentProcess().MainModule?.FileName;
+        var exeDir = !string.IsNullOrEmpty(exePath) ? Path.GetDirectoryName(exePath) : null;
+        
+        var possibleBaseDirs = new List<string>();
+        
+        if (!string.IsNullOrEmpty(exeDir))
+        {
+            possibleBaseDirs.Add(Path.Combine(exeDir, "game-lang"));
+            possibleBaseDirs.Add(Path.Combine(exeDir, "..", "Resources", "game-lang"));
+        }
+        
+        possibleBaseDirs.Add(Path.Combine(AppContext.BaseDirectory, "game-lang"));
+        possibleBaseDirs.Add(Path.Combine(AppContext.BaseDirectory, "assets", "game-lang"));
+        
+        foreach (var baseDir in possibleBaseDirs)
+        {
+            if (Directory.Exists(baseDir))
+            {
+                foreach (var dir in Directory.GetDirectories(baseDir))
+                {
+                    var langCode = Path.GetFileName(dir);
+                    if (!languages.Contains(langCode))
+                    {
+                        languages.Add(langCode);
+                    }
+                }
+                break; // Use first found location
+            }
+        }
+        
+        return languages;
+    }
 }
 
 // Models
@@ -5640,11 +6546,34 @@ public class Config
     /// If true, game will run in online mode (requires authentication).
     /// If false, game runs in offline mode.
     /// </summary>
-    public bool OnlineMode { get; set; } = false;
+    public bool OnlineMode { get; set; } = true;
     /// <summary>
     /// Auth server domain for online mode (e.g., "sessions.sanasol.ws").
     /// </summary>
     public string AuthDomain { get; set; } = "sessions.sanasol.ws";
+    /// <summary>
+    /// Last directory used for mod export. Defaults to Desktop.
+    /// </summary>
+    public string LastExportPath { get; set; } = "";
+    /// <summary>
+    /// List of saved profiles (UUID, name pairs).
+    /// </summary>
+    public List<Profile> Profiles { get; set; } = new();
+    /// <summary>
+    /// Index of the currently active profile. -1 means no profile selected (use UUID/Nick directly).
+    /// </summary>
+    public int ActiveProfileIndex { get; set; } = -1;
+}
+
+/// <summary>
+/// A user profile with UUID and display name.
+/// </summary>
+public class Profile
+{
+    public string Id { get; set; } = Guid.NewGuid().ToString();
+    public string UUID { get; set; } = "";
+    public string Name { get; set; } = "";
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 }
 
 /// <summary>
@@ -5786,6 +6715,25 @@ public class InstalledMod
     public string CurseForgeId { get; set; } = "";
     public string FileDate { get; set; } = "";
     public List<CurseForgeScreenshot> Screenshots { get; set; } = new();
+    /// <summary>
+    /// The latest available file ID from CurseForge (for update checking).
+    /// </summary>
+    public string LatestFileId { get; set; } = "";
+    /// <summary>
+    /// The latest available version string from CurseForge (for update display).
+    /// </summary>
+    public string LatestVersion { get; set; } = "";
+}
+
+/// <summary>
+/// Entry for mod list import/export
+/// </summary>
+public class ModListEntry
+{
+    public string? CurseForgeId { get; set; }
+    public string? FileId { get; set; }
+    public string? Name { get; set; }
+    public string? Version { get; set; }
 }
 
 public class ModUpdate
@@ -5907,133 +6855,13 @@ public class CosmeticItem
 }
 
 /// <summary>
-/// Skin configuration for character customization.
-/// This structure matches the format used by the auth server.
+/// Detailed information about an installed game instance.
 /// </summary>
-public class SkinConfig
+public class InstalledVersionInfo
 {
-    /// <summary>
-    /// Player's display name
-    /// </summary>
-    public string? Name { get; set; }
-    
-    /// <summary>
-    /// Body characteristic type (e.g., "Default", "Muscular")
-    /// </summary>
-    public string? BodyCharacteristic { get; set; }
-    
-    /// <summary>
-    /// Cape style
-    /// </summary>
-    public string? Cape { get; set; }
-    
-    /// <summary>
-    /// Ear accessory
-    /// </summary>
-    public string? EarAccessory { get; set; }
-    
-    /// <summary>
-    /// Ear type
-    /// </summary>
-    public string? Ears { get; set; }
-    
-    /// <summary>
-    /// Eyebrow style
-    /// </summary>
-    public string? Eyebrows { get; set; }
-    
-    /// <summary>
-    /// Eye style
-    /// </summary>
-    public string? Eyes { get; set; }
-    
-    /// <summary>
-    /// Eye color (hex or color name)
-    /// </summary>
-    public string? EyeColor { get; set; }
-    
-    /// <summary>
-    /// Face type
-    /// </summary>
-    public string? Face { get; set; }
-    
-    /// <summary>
-    /// Face accessory
-    /// </summary>
-    public string? FaceAccessory { get; set; }
-    
-    /// <summary>
-    /// Facial hair style
-    /// </summary>
-    public string? FacialHair { get; set; }
-    
-    /// <summary>
-    /// Gloves type
-    /// </summary>
-    public string? Gloves { get; set; }
-    
-    /// <summary>
-    /// Haircut style
-    /// </summary>
-    public string? Haircut { get; set; }
-    
-    /// <summary>
-    /// Hair color (hex or gradient ID)
-    /// </summary>
-    public string? HairColor { get; set; }
-    
-    /// <summary>
-    /// Head accessory
-    /// </summary>
-    public string? HeadAccessory { get; set; }
-    
-    /// <summary>
-    /// Mouth style
-    /// </summary>
-    public string? Mouth { get; set; }
-    
-    /// <summary>
-    /// Overpants (pants worn over base)
-    /// </summary>
-    public string? Overpants { get; set; }
-    
-    /// <summary>
-    /// Overtop (top worn over base)
-    /// </summary>
-    public string? Overtop { get; set; }
-    
-    /// <summary>
-    /// Pants style
-    /// </summary>
-    public string? Pants { get; set; }
-    
-    /// <summary>
-    /// Shoes style
-    /// </summary>
-    public string? Shoes { get; set; }
-    
-    /// <summary>
-    /// Skin feature (freckles, marks, etc.)
-    /// </summary>
-    public string? SkinFeature { get; set; }
-    
-    /// <summary>
-    /// Skin color/tone (hex or gradient ID)
-    /// </summary>
-    public string? SkinColor { get; set; }
-    
-    /// <summary>
-    /// Undertop (base layer top)
-    /// </summary>
-    public string? Undertop { get; set; }
-    
-    /// <summary>
-    /// Underwear style
-    /// </summary>
-    public string? Underwear { get; set; }
-    
-    /// <summary>
-    /// Colors dictionary for various parts (key=part, value=color)
-    /// </summary>
-    public Dictionary<string, string>? Colors { get; set; }
+    public int Version { get; set; }
+    public string Branch { get; set; } = "";
+    public string Path { get; set; } = "";
+    public long UserDataSize { get; set; }
+    public bool HasUserData { get; set; }
 }

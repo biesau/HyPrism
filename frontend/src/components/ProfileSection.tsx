@@ -3,10 +3,7 @@ import { motion } from 'framer-motion';
 import { Edit3, Check, Download, User } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useAccentColor } from '../contexts/AccentColorContext';
-import { GetAuthDomain, GetAvatarPreview } from '../../wailsjs/go/app/App';
-
-// Default auth server domain
-const DEFAULT_AUTH_DOMAIN = 'sessions.sanasol.ws';
+import { GetAvatarPreview } from '../../wailsjs/go/app/App';
 
 interface ProfileSectionProps {
   username: string;
@@ -18,6 +15,7 @@ interface ProfileSectionProps {
   onUpdate: () => void;
   launcherVersion: string;
   onOpenProfileEditor?: () => void;
+  refreshTrigger?: number; // Increment to force avatar refresh
 }
 
 export const ProfileSection: React.FC<ProfileSectionProps> = memo(({
@@ -29,12 +27,12 @@ export const ProfileSection: React.FC<ProfileSectionProps> = memo(({
   updateAvailable,
   onUpdate,
   launcherVersion,
-  onOpenProfileEditor
+  onOpenProfileEditor,
+  refreshTrigger
 }) => {
   const { t } = useTranslation();
   const { accentColor } = useAccentColor();
   const [editValue, setEditValue] = useState(username);
-  const [authDomain, setAuthDomain] = useState(DEFAULT_AUTH_DOMAIN);
   const [localAvatar, setLocalAvatar] = useState<string | null>(null);
 
   useEffect(() => {
@@ -42,28 +40,32 @@ export const ProfileSection: React.FC<ProfileSectionProps> = memo(({
   }, [username]);
 
   useEffect(() => {
-    GetAuthDomain().then(domain => {
-      if (domain) setAuthDomain(domain);
-    }).catch(() => {});
-    
     // Try to load local avatar preview
     GetAvatarPreview().then(avatar => {
       if (avatar) setLocalAvatar(avatar);
     }).catch(() => {});
   }, []);
   
-  // Refresh avatar when uuid changes
+  // Refresh avatar when uuid changes or refresh is triggered
   useEffect(() => {
     if (uuid) {
       GetAvatarPreview().then(avatar => {
-        if (avatar) setLocalAvatar(avatar);
+        setLocalAvatar(avatar || null);
       }).catch(() => {});
     }
-  }, [uuid]);
+  }, [uuid, refreshTrigger]);
 
-  const getAvatarHeadUrl = () => {
-    return `https://${authDomain}/avatar/${uuid}/head?bg=transparent`;
-  };
+  // Poll for avatar updates every 5 seconds
+  useEffect(() => {
+    const interval = setInterval(() => {
+      GetAvatarPreview().then(avatar => {
+        if (avatar && avatar !== localAvatar) {
+          setLocalAvatar(avatar);
+        }
+      }).catch(() => {});
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [localAvatar]);
 
   const handleSave = useCallback(() => {
     if (editValue.trim() && editValue.length <= 16) {
@@ -119,30 +121,18 @@ export const ProfileSection: React.FC<ProfileSectionProps> = memo(({
               whileHover={{ scale: 1.05 }}
               whileTap={{ scale: 0.95 }}
               onClick={onOpenProfileEditor}
-              className="w-10 h-10 rounded-full overflow-hidden border-2 flex items-center justify-center bg-[#151515]"
-              style={{ borderColor: accentColor }}
+              className="w-14 h-14 rounded-full overflow-hidden border-2 flex items-center justify-center"
+              style={{ borderColor: accentColor, backgroundColor: localAvatar ? 'transparent' : `${accentColor}20` }}
               title={t('Edit Profile')}
             >
               {localAvatar ? (
                 <img
                   src={localAvatar}
-                  width="40"
-                  height="40"
-                  className="w-full h-full object-cover"
+                  className="w-full h-full object-cover object-[center_20%]"
                   alt="Player Avatar"
                 />
-              ) : uuid ? (
-                <iframe
-                  src={getAvatarHeadUrl()}
-                  width="40"
-                  height="40"
-                  frameBorder="0"
-                  className="w-full h-full pointer-events-none"
-                  title="Player Avatar"
-                  loading="lazy"
-                />
               ) : (
-                <User size={18} className="text-white/40" />
+                <User size={24} style={{ color: accentColor }} />
               )}
             </motion.button>
             <span className="text-2xl font-bold text-white">{username}</span>

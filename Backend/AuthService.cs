@@ -8,7 +8,7 @@ using System.Threading.Tasks;
 namespace HyPrism.Backend;
 
 /// <summary>
-/// Service for authenticating with the F2P auth server.
+/// Service for authenticating with the custom auth server.
 /// Handles session creation and token retrieval.
 /// </summary>
 public class AuthService
@@ -44,7 +44,7 @@ public class AuthService
 
     /// <summary>
     /// Create a game session and get an authentication token.
-    /// This is used for F2P authentication flow.
+    /// This is used for the authentication flow.
     /// </summary>
     public async Task<AuthTokenResult> GetGameSessionTokenAsync(string uuid, string playerName)
     {

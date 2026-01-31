@@ -159,6 +159,7 @@ const App: React.FC = () => {
   const [showProfileEditor, setShowProfileEditor] = useState<boolean>(false);
   const [error, setError] = useState<any>(null);
   const [launchTimeoutError, setLaunchTimeoutError] = useState<{ message: string; logs: string[] } | null>(null);
+  const [avatarRefreshTrigger, setAvatarRefreshTrigger] = useState<number>(0);
 
   // Settings state
   const [launcherBranch, setLauncherBranch] = useState<string>('release');
@@ -330,6 +331,8 @@ const App: React.FC = () => {
     if (nick) setUsername(nick);
     const uuid = await GetUUID();
     if (uuid) setUuid(uuid);
+    // Trigger avatar refresh
+    setAvatarRefreshTrigger(prev => prev + 1);
   };
 
   useEffect(() => {
@@ -737,6 +740,7 @@ const App: React.FC = () => {
             onUpdate={handleUpdate}
             launcherVersion={launcherVersion}
             onOpenProfileEditor={() => setShowProfileEditor(true)}
+            refreshTrigger={avatarRefreshTrigger}
           />
           {/* Hytale Logo & News - Right Side */}
           <div className="flex flex-col items-end gap-3">
@@ -771,6 +775,7 @@ const App: React.FC = () => {
             {!newsDisabled && (
               <Suspense fallback={<div className="w-80 h-32 animate-pulse bg-white/5 rounded-xl" />}>
                 <NewsPreview
+                  isPaused={isDownloading}
                   getNews={async (count) => {
                     const releases = await fetchLauncherReleases();
                     const hytale = await GetNews(Math.max(0, count));

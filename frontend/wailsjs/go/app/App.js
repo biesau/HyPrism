@@ -235,6 +235,39 @@ export function GetAvatarPreview() {
     return callBackend('GetAvatarPreview');
 }
 
+export function ClearAvatarCache() {
+    return callBackend('ClearAvatarCache');
+}
+
+// Profile Management
+export function GetProfiles() {
+    return callBackend('GetProfiles');
+}
+
+export function GetActiveProfileIndex() {
+    return callBackend('GetActiveProfileIndex');
+}
+
+export function CreateProfile(name, uuid) {
+    return callBackend('CreateProfile', name, uuid);
+}
+
+export function DeleteProfile(profileId) {
+    return callBackend('DeleteProfile', profileId);
+}
+
+export function SwitchProfile(index) {
+    return callBackend('SwitchProfile', index);
+}
+
+export function UpdateProfile(profileId, newName, newUuid) {
+    return callBackend('UpdateProfile', profileId, newName, newUuid);
+}
+
+export function SaveCurrentAsProfile() {
+    return callBackend('SaveCurrentAsProfile');
+}
+
 export function SetUUID(uuid) {
     return callBackend('SetUUID', uuid);
 }
@@ -279,6 +312,26 @@ export function InstallModToInstance(modId, slug, version) {
     return callBackend('InstallModToInstance', modId, slug, version);
 }
 
+export function InstallLocalModFile(sourcePath, branch, version) {
+    return callBackend('InstallLocalModFile', sourcePath, branch, version);
+}
+
+export function ExportModList(branch, version) {
+    return callBackend('ExportModList', branch, version);
+}
+
+export function ExportModsToFolder(branch, version, targetFolder, exportType) {
+    return callBackend('ExportModsToFolder', branch, version, targetFolder, exportType);
+}
+
+export function GetLastExportPath() {
+    return callBackend('GetLastExportPath');
+}
+
+export function ImportModList(modListPath, branch, version) {
+    return callBackend('ImportModList', modListPath, branch, version);
+}
+
 export function IsGameInstalled() {
     return callBackend('IsGameInstalled');
 }
@@ -305,6 +358,14 @@ export function OpenInstanceModsFolder(branch, version) {
 
 export function OpenInstanceFolder(branch, version) {
     return callBackend('OpenInstanceFolder', branch, version);
+}
+
+export function ExportInstance(branch, version) {
+    return callBackend('ExportInstance', branch, version);
+}
+
+export function GetInstalledVersionsDetailed() {
+    return callBackend('GetInstalledVersionsDetailed');
 }
 
 export function OpenModsFolder() {
@@ -521,6 +582,14 @@ export function GetDisableHardwareAcceleration() {
 
 export function SetDisableHardwareAcceleration(disabled) {
     return callBackend('SetDisableHardwareAcceleration', disabled);
+}
+
+export function SetGameLanguage(languageCode) {
+    return callBackend('SetGameLanguage', languageCode);
+}
+
+export function GetAvailableGameLanguages() {
+    return callBackend('GetAvailableGameLanguages');
 }
 
 export function WindowClose() {

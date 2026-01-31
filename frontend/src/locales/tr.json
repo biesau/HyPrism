@@ -127,5 +127,20 @@
     "Offline Mode": "Çevrimdışı Mod",
     "Online Mode (Click to disable)": "Çevrimiçi Mod (Devre dışı bırakmak için tıklayın)",
     "Offline Mode (Click to enable online)": "Çevrimdışı Mod (Çevrimiçi etkinleştirmek için tıklayın)",
-    "Report Issue": "Sorun Bildir"
+    "Report Issue": "Sorun Bildir",
+    "Saved Profiles": "Kayıtlı Profiller",
+    "Save Current Profile": "Mevcut Profili Kaydet",
+    "Create New Profile": "Yeni Profil Oluştur",
+    "Delete Profile": "Profili Sil",
+    "Profile name...": "Profil adı...",
+    "No saved profiles yet": "Henüz kayıtlı profil yok",
+    "Profile saved!": "Profil kaydedildi!",
+    "Profile Editor": "Profil Düzenleyici",
+    "Your player avatar": "Oyuncu avatarınız",
+    "Edit Username": "Kullanıcı Adını Düzenle",
+    "Player UUID": "Oyuncu UUID",
+    "Copy UUID": "UUID'yi Kopyala",
+    "Edit UUID": "UUID'yi Düzenle",
+    "Generate Random UUID": "Rastgele UUID Oluştur",
+    "Save UUID": "UUID'yi Kaydet"
 }

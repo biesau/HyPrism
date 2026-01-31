@@ -149,5 +149,20 @@
     "Close launcher when game starts": "Close launcher when game starts",
     "Show announcements": "Show announcements",
     "Show Discord announcements in launcher": "Show Discord announcements in launcher",
-    "Announcement": "Announcement"
+    "Announcement": "Announcement",
+    "Saved Profiles": "Saved Profiles",
+    "Save Current Profile": "Save Current Profile",
+    "Create New Profile": "Create New Profile",
+    "Delete Profile": "Delete Profile",
+    "Profile name...": "Profile name...",
+    "No saved profiles yet": "No saved profiles yet",
+    "Profile saved!": "Profile saved!",
+    "Profile Editor": "Profile Editor",
+    "Your player avatar": "Your player avatar",
+    "Edit Username": "Edit Username",
+    "Player UUID": "Player UUID",
+    "Copy UUID": "Copy UUID",
+    "Edit UUID": "Edit UUID",
+    "Generate Random UUID": "Generate Random UUID",
+    "Save UUID": "Save UUID"
 }

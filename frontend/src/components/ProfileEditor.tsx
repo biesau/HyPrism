@@ -1,10 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
-import { X, RefreshCw, Check, User, Edit3, Shuffle, Copy, CheckCircle, ExternalLink } from 'lucide-react';
+import { X, RefreshCw, Check, User, Edit3, Copy, CheckCircle, Plus, Trash2, Dices } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAccentColor } from '../contexts/AccentColorContext';
-import { GetUUID, SetUUID, GetNick, SetNick, GetAuthDomain } from '../../wailsjs/go/app/App';
-import { BrowserOpenURL } from '../../wailsjs/runtime/runtime';
+import { GetUUID, SetUUID, GetNick, SetNick, GetAvatarPreview, GetProfiles, CreateProfile, DeleteProfile, SwitchProfile, SaveCurrentAsProfile } from '../../wailsjs/go/app/App';
+import type { Profile } from '../../wailsjs/go/app/App';
 
 interface ProfileEditorProps {
     isOpen: boolean;
@@ -12,8 +12,29 @@ interface ProfileEditorProps {
     onProfileUpdate?: () => void;
 }
 
-// Default auth server domain
-const DEFAULT_AUTH_DOMAIN = 'sessions.sanasol.ws';
+// Generate random usernames
+const generateRandomName = () => {
+    const adjectives = [
+        'Happy', 'Cosmic', 'Swift', 'Brave', 'Noble', 'Clever', 'Mighty', 'Silent', 
+        'Golden', 'Crystal', 'Shadow', 'Storm', 'Frozen', 'Ancient', 'Mystic', 'Wild',
+        'Radiant', 'Fierce', 'Gentle', 'Bold', 'Lucky', 'Sneaky', 'Epic', 'Legendary',
+        'Daring', 'Jolly', 'Cunning', 'Serene', 'Blazing', 'Lunar', 'Solar', 'Stellar',
+        'Crimson', 'Azure', 'Emerald', 'Obsidian', 'Primal', 'Royal', 'Valiant', 'Zealous',
+        'Frosty', 'Wicked', 'Humble', 'Glorious', 'Hyper', 'Ultra', 'Mega', 'Super'
+    ];
+    const nouns = [
+        'Panda', 'Tiger', 'Wolf', 'Phoenix', 'Dragon', 'Knight', 'Ranger', 'Mage',
+        'Hunter', 'Guardian', 'Warrior', 'Sage', 'Fox', 'Bear', 'Eagle', 'Hawk',
+        'Lion', 'Panther', 'Falcon', 'Raven', 'Owl', 'Shark', 'Cobra', 'Viper',
+        'Lynx', 'Badger', 'Otter', 'Moose', 'Bison', 'Mantis', 'Scorpion', 'Spider',
+        'Pirate', 'Ninja', 'Samurai', 'Viking', 'Wizard', 'Sorcerer', 'Alchemist', 'Paladin',
+        'Astronaut', 'Voyager', 'Pioneer', 'Explorer', 'Captain', 'Admiral', 'Champion', 'Legend'
+    ];
+    const adj = adjectives[Math.floor(Math.random() * adjectives.length)];
+    const noun = nouns[Math.floor(Math.random() * nouns.length)];
+    const num = Math.floor(Math.random() * 9000) + 1000; // 4-digit number like Xbox
+    return `${adj}${noun}${num}`;
+};
 
 export const ProfileEditor: React.FC<ProfileEditorProps> = ({ isOpen, onClose, onProfileUpdate }) => {
     const { t } = useTranslation();
@@ -27,21 +48,62 @@ export const ProfileEditor: React.FC<ProfileEditorProps> = ({ isOpen, onClose, o
     const [editUuid, setEditUuid] = useState('');
     const [copiedUuid, setCopiedUuid] = useState(false);
     const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
-    const [authDomain, setAuthDomain] = useState(DEFAULT_AUTH_DOMAIN);
+    const [localAvatar, setLocalAvatar] = useState<string | null>(null);
+    
+    // Profile management state
+    const [profiles, setProfiles] = useState<Profile[]>([]);
+    
+    // New profile creation flow - directly opens name editor
+    const [isCreatingNewProfile, setIsCreatingNewProfile] = useState(false);
+
+    // Load profiles
+    const loadProfiles = useCallback(async () => {
+        try {
+            const profileList = await GetProfiles();
+            setProfiles(profileList || []);
+        } catch (err) {
+            console.error('Failed to load profiles:', err);
+        }
+    }, []);
+
+    // Load avatar preview
+    const loadAvatar = useCallback(async () => {
+        try {
+            const avatar = await GetAvatarPreview();
+            if (avatar) setLocalAvatar(avatar);
+        } catch (err) {
+            console.error('Failed to load avatar:', err);
+        }
+    }, []);
 
     useEffect(() => {
         if (isOpen) {
             loadProfile();
+            loadAvatar();
+            loadProfiles();
+            setIsCreatingNewProfile(false);
         }
-    }, [isOpen]);
+    }, [isOpen, loadAvatar, loadProfiles]);
+
+    // Poll for avatar updates while editor is open
+    useEffect(() => {
+        if (!isOpen) return;
+        const interval = setInterval(() => {
+            GetAvatarPreview().then(avatar => {
+                if (avatar && avatar !== localAvatar) {
+                    setLocalAvatar(avatar);
+                }
+            }).catch(() => {});
+        }, 3000); // Check every 3 seconds while editor is open
+        return () => clearInterval(interval);
+    }, [isOpen, localAvatar]);
 
     const loadProfile = async () => {
         setIsLoading(true);
         try {
-            const [userUuid, userName, domain] = await Promise.all([
+            const [userUuid, userName] = await Promise.all([
                 GetUUID(),
-                GetNick(),
-                GetAuthDomain()
+                GetNick()
             ]);
             setUuid(userUuid || generateUUID());
             // Use 'HyPrism' as fallback - matches backend default
@@ -49,23 +111,12 @@ export const ProfileEditor: React.FC<ProfileEditorProps> = ({ isOpen, onClose, o
             setUsernameState(displayName);
             setEditUsername(displayName);
             setEditUuid(userUuid || '');
-            if (domain) setAuthDomain(domain);
         } catch (err) {
             console.error('Failed to load profile:', err);
             setUuid(generateUUID());
             setUsernameState('HyPrism');
         }
         setIsLoading(false);
-    };
-
-    // Get avatar head URL from auth server
-    const getAvatarHeadUrl = () => {
-        return `https://${authDomain}/avatar/${uuid}/head?bg=transparent`;
-    };
-
-    // Get customizer URL from auth server
-    const getCustomizerUrl = () => {
-        return `https://${authDomain}/customizer/${uuid}`;
     };
 
     const generateUUID = () => {
@@ -76,13 +127,29 @@ export const ProfileEditor: React.FC<ProfileEditorProps> = ({ isOpen, onClose, o
         });
     };
 
+    // Auto-save current profile whenever username or uuid changes
+    const autoSaveProfile = useCallback(async () => {
+        try {
+            await SaveCurrentAsProfile();
+            await loadProfiles();
+        } catch (err) {
+            console.error('Failed to auto-save profile:', err);
+        }
+    }, [loadProfiles]);
+
     const handleSaveUsername = async () => {
-        if (editUsername.trim() && editUsername.length <= 16) {
+        const trimmedUsername = editUsername.trim();
+        if (trimmedUsername && trimmedUsername.length >= 1 && trimmedUsername.length <= 16) {
             setSaveStatus('saving');
             try {
-                await SetNick(editUsername.trim());
-                setUsernameState(editUsername.trim());
+                await SetNick(trimmedUsername);
+                setUsernameState(trimmedUsername);
                 setIsEditingUsername(false);
+                setIsCreatingNewProfile(false);
+                
+                // Auto-save the profile
+                await autoSaveProfile();
+                
                 setSaveStatus('saved');
                 onProfileUpdate?.();
                 setTimeout(() => setSaveStatus('idle'), 2000);
@@ -101,6 +168,10 @@ export const ProfileEditor: React.FC<ProfileEditorProps> = ({ isOpen, onClose, o
                 await SetUUID(trimmed);
                 setUuid(trimmed);
                 setIsEditingUuid(false);
+                
+                // Auto-save the profile
+                await autoSaveProfile();
+                
                 setSaveStatus('saved');
                 onProfileUpdate?.();
                 setTimeout(() => setSaveStatus('idle'), 2000);
@@ -126,12 +197,41 @@ export const ProfileEditor: React.FC<ProfileEditorProps> = ({ isOpen, onClose, o
         }
     };
 
+    const handleSaveUsernameWithName = async (name: string) => {
+        if (name.trim() && name.length <= 16) {
+            setSaveStatus('saving');
+            try {
+                await SetNick(name.trim());
+                setUsernameState(name.trim());
+                setEditUsername(name.trim());
+                setIsEditingUsername(false);
+                setIsCreatingNewProfile(false);
+                
+                // Auto-save the profile
+                await autoSaveProfile();
+                
+                setSaveStatus('saved');
+                onProfileUpdate?.();
+                setTimeout(() => setSaveStatus('idle'), 2000);
+            } catch (err) {
+                console.error('Failed to save username:', err);
+                setSaveStatus('idle');
+            }
+        }
+    };
+
     const handleUsernameKeyDown = (e: React.KeyboardEvent) => {
         if (e.key === 'Enter') {
             handleSaveUsername();
         } else if (e.key === 'Escape') {
-            setEditUsername(username);
-            setIsEditingUsername(false);
+            if (isCreatingNewProfile) {
+                // If creating new profile and escaping, generate random name
+                const randomName = generateRandomName();
+                handleSaveUsernameWithName(randomName);
+            } else {
+                setEditUsername(username);
+                setIsEditingUsername(false);
+            }
         }
     };
 
@@ -141,6 +241,80 @@ export const ProfileEditor: React.FC<ProfileEditorProps> = ({ isOpen, onClose, o
         } else if (e.key === 'Escape') {
             setEditUuid(uuid);
             setIsEditingUuid(false);
+        }
+    };
+    
+    // Profile management handlers
+    const handleSwitchProfile = async (index: number) => {
+        try {
+            const success = await SwitchProfile(index);
+            if (success) {
+                await loadProfile();
+                await loadAvatar();
+                onProfileUpdate?.();
+            }
+        } catch (err) {
+            console.error('Failed to switch profile:', err);
+        }
+    };
+    
+    const handleDeleteProfile = async (profileId: string, e: React.MouseEvent) => {
+        e.stopPropagation();
+        e.preventDefault();
+        
+        console.log('[ProfileEditor] Deleting profile:', profileId);
+        
+        try {
+            const success = await DeleteProfile(profileId);
+            console.log('[ProfileEditor] Delete result:', success);
+            if (success) {
+                // Reload profiles after delete
+                await loadProfiles();
+                onProfileUpdate?.();
+            }
+        } catch (err) {
+            console.error('Failed to delete profile:', err);
+        }
+    };
+    
+    const handleCreateProfile = async () => {
+        // Generate new UUID and random name for the new profile
+        const newUuid = generateUUID();
+        const randomName = generateRandomName();
+        
+        console.log('[ProfileEditor] Creating new profile:', randomName, newUuid);
+        
+        try {
+            // Create profile with random name and new UUID
+            const profile = await CreateProfile(randomName, newUuid);
+            console.log('[ProfileEditor] Created profile:', profile);
+            
+            if (profile) {
+                // Reload profiles list
+                await loadProfiles();
+                
+                // Set the new UUID and name as current
+                await SetUUID(newUuid);
+                await SetNick(randomName);
+                
+                // Update local state
+                setUuid(newUuid);
+                setUsernameState(randomName);
+                setEditUsername(randomName);
+                setEditUuid(newUuid);
+                setLocalAvatar(null); // New profile has no avatar
+                
+                // Switch to the new profile by index
+                const profileList = await GetProfiles();
+                const newProfileIndex = profileList?.findIndex(p => p.UUID === newUuid);
+                if (newProfileIndex !== undefined && newProfileIndex >= 0) {
+                    await SwitchProfile(newProfileIndex);
+                }
+                
+                onProfileUpdate?.();
+            }
+        } catch (err) {
+            console.error('Failed to create profile:', err);
         }
     };
 
@@ -159,206 +333,298 @@ export const ProfileEditor: React.FC<ProfileEditorProps> = ({ isOpen, onClose, o
                     initial={{ opacity: 0, scale: 0.95, y: 20 }}
                     animate={{ opacity: 1, scale: 1, y: 0 }}
                     exit={{ opacity: 0, scale: 0.95, y: 20 }}
-                    className="bg-[#1a1a1a] border border-white/10 rounded-2xl shadow-2xl w-full max-w-lg mx-4 overflow-hidden"
+                    className="bg-[#1a1a1a] border border-white/10 rounded-2xl shadow-2xl w-full max-w-3xl mx-4 overflow-hidden flex max-h-[80vh]"
                 >
-                    {/* Header */}
-                    <div className="flex items-center justify-between p-4 border-b border-white/10">
-                        <div className="flex items-center gap-3">
-                            <User size={24} style={{ color: accentColor }} />
-                            <h2 className="text-lg font-bold text-white">{t('Profile Editor')}</h2>
+                    {/* Left Sidebar - Profiles List */}
+                    <div className="w-48 bg-[#151515] border-r border-white/5 flex flex-col py-4 overflow-y-auto">
+                        <h2 className="text-lg font-bold text-white px-4 mb-4">{t('Saved Profiles')}</h2>
+                        
+                        {/* Profile Navigation - Like Settings tabs */}
+                        <nav className="flex-1 space-y-1 px-2 overflow-y-auto">
+                            {/* Current Profile (Active) */}
+                            <button
+                                className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-colors"
+                                style={{ backgroundColor: `${accentColor}20`, color: accentColor }}
+                            >
+                                <div 
+                                    className="w-8 h-8 rounded-full overflow-hidden border-2 flex-shrink-0 flex items-center justify-center"
+                                    style={{ borderColor: accentColor, backgroundColor: localAvatar ? 'transparent' : `${accentColor}20` }}
+                                >
+                                    {localAvatar ? (
+                                        <img
+                                            src={localAvatar}
+                                            className="w-full h-full object-cover object-[center_20%]"
+                                            alt="Avatar"
+                                        />
+                                    ) : (
+                                        <User size={14} style={{ color: accentColor }} />
+                                    )}
+                                </div>
+                                <span className="truncate font-medium">{username}</span>
+                            </button>
+                            
+                            {/* Other Saved Profiles */}
+                            {profiles.filter(p => p.UUID !== uuid && p.Name && p.Name.trim() !== '').map((profile) => (
+                                <div
+                                    key={profile.Id}
+                                    className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-sm text-white/60 hover:text-white hover:bg-white/5 transition-colors group"
+                                >
+                                    <button
+                                        onClick={() => handleSwitchProfile(profiles.indexOf(profile))}
+                                        className="flex items-center gap-3 flex-1 min-w-0"
+                                    >
+                                        <div 
+                                            className="w-8 h-8 rounded-full overflow-hidden border border-white/20 flex-shrink-0 flex items-center justify-center bg-white/5"
+                                        >
+                                            <User size={14} className="text-white/40" />
+                                        </div>
+                                        <span className="truncate">{profile.Name || 'Unnamed'}</span>
+                                    </button>
+                                    <button
+                                        onClick={(e) => handleDeleteProfile(profile.Id, e)}
+                                        className="p-1.5 rounded-lg text-red-400/60 hover:text-red-400 hover:bg-red-500/20 transition-all flex-shrink-0 opacity-0 group-hover:opacity-100"
+                                        title={t('Delete Profile')}
+                                    >
+                                        <Trash2 size={14} />
+                                    </button>
+                                </div>
+                            ))}
+                            
+                            {profiles.filter(p => p.UUID !== uuid && p.Name && p.Name.trim() !== '').length === 0 && (
+                                <p className="text-center text-white/20 text-xs py-4 px-2">
+                                    {t('No saved profiles yet')}
+                                </p>
+                            )}
+                        </nav>
+                        
+                        {/* Create New Profile Button at Bottom */}
+                        <div className="px-2 pt-4 border-t border-white/5 mx-2">
+                            <button
+                                onClick={handleCreateProfile}
+                                className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg border border-dashed border-white/20 text-white/40 hover:text-white/60 hover:border-white/40 text-sm transition-colors"
+                            >
+                                <Plus size={14} />
+                                <span>{t('Create New Profile')}</span>
+                            </button>
                         </div>
-                        <button
-                            onClick={onClose}
-                            className="w-8 h-8 rounded-lg flex items-center justify-center text-white/60 hover:text-white hover:bg-white/10 transition-colors"
-                        >
-                            <X size={18} />
-                        </button>
                     </div>
 
-                    {/* Content */}
-                    <div className="p-6">
-                        {isLoading ? (
-                            <div className="flex items-center justify-center py-12">
-                                <RefreshCw size={32} className="animate-spin text-white/40" />
-                            </div>
-                        ) : (
-                            <div className="space-y-6">
-                                {/* Profile Picture Section */}
-                                <div className="flex flex-col items-center gap-4">
-                                    {/* Skin Head from Auth Server */}
-                                    <div 
-                                        className="w-24 h-24 rounded-full overflow-hidden border-2 bg-[#151515]"
-                                        style={{ borderColor: accentColor }}
-                                        title={t('Your character head from the skin customizer')}
-                                    >
-                                        {uuid ? (
-                                            <iframe
-                                                src={getAvatarHeadUrl()}
-                                                width="96"
-                                                height="96"
-                                                frameBorder="0"
-                                                className="w-full h-full"
-                                                title="Player Avatar Head"
-                                                loading="lazy"
-                                            />
-                                        ) : (
-                                            <div className="w-full h-full flex items-center justify-center text-white/30">
-                                                <User size={40} />
-                                            </div>
+                    {/* Right Content - Profile Details */}
+                    <div className="flex-1 flex flex-col min-w-0">
+                        {/* Header */}
+                        <div className="flex items-center justify-between p-4 border-b border-white/5">
+                            <h3 className="text-white font-medium">{t('Profile Editor')}</h3>
+                            <button
+                                onClick={onClose}
+                                className="p-2 rounded-lg text-white/40 hover:text-white/80 hover:bg-white/10 transition-colors"
+                            >
+                                <X size={20} />
+                            </button>
+                        </div>
+
+                        {/* Content */}
+                        <div className="flex-1 p-6 overflow-y-auto">
+                            {isLoading ? (
+                                <div className="flex items-center justify-center py-12">
+                                    <RefreshCw size={32} className="animate-spin text-white/40" />
+                                </div>
+                            ) : (
+                                <div className="space-y-6">
+                                    {/* Profile Picture Section */}
+                                    <div className="flex flex-col items-center gap-4">
+                                        {/* Avatar - Local or Placeholder */}
+                                        <div 
+                                            className="w-24 h-24 rounded-full overflow-hidden border-2 flex items-center justify-center"
+                                            style={{ borderColor: accentColor, backgroundColor: localAvatar ? 'transparent' : `${accentColor}20` }}
+                                            title={t('Your player avatar')}
+                                        >
+                                            {localAvatar ? (
+                                                <img
+                                                    src={localAvatar}
+                                                    className="w-full h-full object-cover object-[center_15%]"
+                                                    alt="Player Avatar"
+                                                />
+                                            ) : (
+                                                <User size={40} style={{ color: accentColor }} />
+                                            )}
+                                        </div>
+                                        
+                                        {/* Username Display/Edit */}
+                                        <div className="flex items-center gap-2">
+                                            {isEditingUsername ? (
+                                                <div className="flex items-center gap-2">
+                                                    <input
+                                                        type="text"
+                                                        value={editUsername}
+                                                        onChange={(e) => setEditUsername(e.target.value)}
+                                                        onKeyDown={handleUsernameKeyDown}
+                                                        maxLength={16}
+                                                        autoFocus
+                                                        placeholder={isCreatingNewProfile ? t('Enter profile name...') : ''}
+                                                        className="bg-[#151515] text-white text-xl font-bold px-3 py-1 rounded-lg border outline-none w-48 text-center"
+                                                        style={{ borderColor: accentColor }}
+                                                    />
+                                                    <motion.button
+                                                        whileHover={{ scale: 1.1 }}
+                                                        whileTap={{ scale: 0.9 }}
+                                                        onClick={() => setEditUsername(generateRandomName())}
+                                                        className="p-2 rounded-lg bg-white/10 text-white/70 hover:bg-white/20"
+                                                        title={t('Generate Random Name')}
+                                                    >
+                                                        <Dices size={16} />
+                                                    </motion.button>
+                                                    <motion.button
+                                                        whileHover={{ scale: 1.1 }}
+                                                        whileTap={{ scale: 0.9 }}
+                                                        onClick={handleSaveUsername}
+                                                        className="p-2 rounded-lg"
+                                                        style={{ backgroundColor: `${accentColor}33`, color: accentColor }}
+                                                    >
+                                                        <Check size={16} />
+                                                    </motion.button>
+                                                </div>
+                                            ) : (
+                                                <>
+                                                    <span className="text-2xl font-bold text-white">{username}</span>
+                                                    <motion.button
+                                                        whileHover={{ scale: 1.1 }}
+                                                        whileTap={{ scale: 0.9 }}
+                                                        onClick={async () => {
+                                                            const newName = generateRandomName();
+                                                            await SetNick(newName);
+                                                            setUsernameState(newName);
+                                                            setEditUsername(newName);
+                                                            onProfileUpdate?.();
+                                                        }}
+                                                        className="p-1.5 rounded-lg text-white/40 hover:text-white/80 hover:bg-white/5"
+                                                        title={t('Generate Random Name')}
+                                                    >
+                                                        <Dices size={14} />
+                                                    </motion.button>
+                                                    <motion.button
+                                                        whileHover={{ scale: 1.1 }}
+                                                        whileTap={{ scale: 0.9 }}
+                                                        onClick={() => {
+                                                            setEditUsername(username);
+                                                            setIsEditingUsername(true);
+                                                        }}
+                                                        className="p-1.5 rounded-lg text-white/40 hover:text-white/80 hover:bg-white/5"
+                                                        title={t('Edit Username')}
+                                                    >
+                                                        <Edit3 size={14} />
+                                                    </motion.button>
+                                                </>
+                                            )}
+                                        </div>
+                                        
+                                        {/* New profile hint */}
+                                        {isCreatingNewProfile && isEditingUsername && (
+                                            <p className="text-xs text-white/40 text-center">
+                                                {t('Enter a name for your new profile or press Escape for a random one')}
+                                            </p>
                                         )}
                                     </div>
-                                    
-                                    {/* Username Display/Edit */}
-                                    <div className="flex items-center gap-2">
-                                        {isEditingUsername ? (
+
+                                    {/* UUID Section */}
+                                    <div className="p-4 rounded-xl bg-[#151515] border border-white/10">
+                                        <div className="flex items-center justify-between mb-2">
+                                            <label className="text-sm text-white/60">{t('Player UUID')}</label>
+                                            <div className="flex items-center gap-1">
+                                                <motion.button
+                                                    whileHover={{ scale: 1.05 }}
+                                                    whileTap={{ scale: 0.95 }}
+                                                    onClick={handleCopyUuid}
+                                                    className="p-1.5 rounded-lg text-white/40 hover:text-white/80 hover:bg-white/10"
+                                                    title={t('Copy UUID')}
+                                                >
+                                                    {copiedUuid ? <CheckCircle size={14} className="text-green-400" /> : <Copy size={14} />}
+                                                </motion.button>
+                                                <motion.button
+                                                    whileHover={{ scale: 1.05 }}
+                                                    whileTap={{ scale: 0.95 }}
+                                                    onClick={async () => {
+                                                        const newUuid = generateUUID();
+                                                        await SetUUID(newUuid);
+                                                        setUuid(newUuid);
+                                                        setEditUuid(newUuid);
+                                                        onProfileUpdate?.();
+                                                    }}
+                                                    className="p-1.5 rounded-lg text-white/40 hover:text-white/80 hover:bg-white/10"
+                                                    title={t('Generate Random UUID')}
+                                                >
+                                                    <Dices size={14} />
+                                                </motion.button>
+                                                <motion.button
+                                                    whileHover={{ scale: 1.05 }}
+                                                    whileTap={{ scale: 0.95 }}
+                                                    onClick={() => {
+                                                        setEditUuid(uuid);
+                                                        setIsEditingUuid(true);
+                                                    }}
+                                                    className="p-1.5 rounded-lg text-white/40 hover:text-white/80 hover:bg-white/10"
+                                                    title={t('Edit UUID')}
+                                                >
+                                                    <Edit3 size={14} />
+                                                </motion.button>
+                                            </div>
+                                        </div>
+                                        
+                                        {isEditingUuid ? (
                                             <div className="flex items-center gap-2">
                                                 <input
                                                     type="text"
-                                                    value={editUsername}
-                                                    onChange={(e) => setEditUsername(e.target.value)}
-                                                    onKeyDown={handleUsernameKeyDown}
-                                                    maxLength={16}
+                                                    value={editUuid}
+                                                    onChange={(e) => setEditUuid(e.target.value)}
+                                                    onKeyDown={handleUuidKeyDown}
                                                     autoFocus
-                                                    className="bg-[#151515] text-white text-xl font-bold px-3 py-1 rounded-lg border outline-none w-40 text-center"
+                                                    className="flex-1 bg-[#0a0a0a] text-white font-mono text-sm px-3 py-2 rounded-lg border outline-none"
                                                     style={{ borderColor: accentColor }}
                                                 />
                                                 <motion.button
-                                                    whileHover={{ scale: 1.1 }}
-                                                    whileTap={{ scale: 0.9 }}
-                                                    onClick={handleSaveUsername}
+                                                    whileHover={{ scale: 1.05 }}
+                                                    whileTap={{ scale: 0.95 }}
+                                                    onClick={handleRandomizeUuid}
+                                                    className="p-2 rounded-lg bg-white/10 text-white/70 hover:bg-white/20"
+                                                    title={t('Generate Random UUID')}
+                                                >
+                                                    <Dices size={16} />
+                                                </motion.button>
+                                                <motion.button
+                                                    whileHover={{ scale: 1.05 }}
+                                                    whileTap={{ scale: 0.95 }}
+                                                    onClick={handleSaveUuid}
                                                     className="p-2 rounded-lg"
                                                     style={{ backgroundColor: `${accentColor}33`, color: accentColor }}
+                                                    title={t('Save UUID')}
                                                 >
                                                     <Check size={16} />
                                                 </motion.button>
                                             </div>
                                         ) : (
-                                            <>
-                                                <span className="text-2xl font-bold text-white">{username}</span>
-                                                <motion.button
-                                                    whileHover={{ scale: 1.1 }}
-                                                    whileTap={{ scale: 0.9 }}
-                                                    onClick={() => {
-                                                        setEditUsername(username);
-                                                        setIsEditingUsername(true);
-                                                    }}
-                                                    className="p-1.5 rounded-lg text-white/40 hover:text-white/80 hover:bg-white/5"
-                                                    title={t('Edit Username')}
-                                                >
-                                                    <Edit3 size={14} />
-                                                </motion.button>
-                                            </>
+                                            <p className="text-white font-mono text-sm truncate">{uuid}</p>
                                         )}
                                     </div>
-                                </div>
 
-                                {/* Skin Customizer Link */}
-                                <div className="p-4 rounded-xl bg-[#151515] border border-white/10">
-                                    <label className="block text-sm text-white/60 mb-2">{t('Character Appearance')}</label>
-                                    <p className="text-xs text-white/40 mb-3">
-                                        {t('Customize your character\'s skin, hair, clothes, and accessories using the online customizer.')}
-                                    </p>
-                                    <motion.button
-                                        whileHover={{ scale: 1.02 }}
-                                        whileTap={{ scale: 0.98 }}
-                                        onClick={() => BrowserOpenURL(getCustomizerUrl())}
-                                        disabled={!uuid}
-                                        className="w-full h-12 px-4 rounded-xl flex items-center justify-center gap-2 text-white font-medium transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-                                        style={{ backgroundColor: accentColor }}
-                                    >
-                                        <User size={18} />
-                                        {t('Open Skin Customizer')}
-                                        <ExternalLink size={14} className="ml-1" />
-                                    </motion.button>
-                                </div>
-
-                                {/* UUID Section */}
-                                <div className="p-4 rounded-xl bg-[#151515] border border-white/10">
-                                    <div className="flex items-center justify-between mb-2">
-                                        <label className="text-sm text-white/60">{t('Player UUID')}</label>
-                                        <div className="flex items-center gap-1">
-                                            <motion.button
-                                                whileHover={{ scale: 1.05 }}
-                                                whileTap={{ scale: 0.95 }}
-                                                onClick={handleCopyUuid}
-                                                className="p-1.5 rounded-lg text-white/40 hover:text-white/80 hover:bg-white/10"
-                                                title={t('Copy UUID')}
-                                            >
-                                                {copiedUuid ? <CheckCircle size={14} className="text-green-400" /> : <Copy size={14} />}
-                                            </motion.button>
-                                            <motion.button
-                                                whileHover={{ scale: 1.05 }}
-                                                whileTap={{ scale: 0.95 }}
-                                                onClick={() => {
-                                                    setEditUuid(uuid);
-                                                    setIsEditingUuid(true);
-                                                }}
-                                                className="p-1.5 rounded-lg text-white/40 hover:text-white/80 hover:bg-white/10"
-                                                title={t('Edit UUID')}
-                                            >
-                                                <Edit3 size={14} />
-                                            </motion.button>
-                                        </div>
-                                    </div>
-                                    
-                                    {isEditingUuid ? (
-                                        <div className="flex items-center gap-2">
-                                            <input
-                                                type="text"
-                                                value={editUuid}
-                                                onChange={(e) => setEditUuid(e.target.value)}
-                                                onKeyDown={handleUuidKeyDown}
-                                                autoFocus
-                                                className="flex-1 bg-[#0a0a0a] text-white font-mono text-sm px-3 py-2 rounded-lg border outline-none"
-                                                style={{ borderColor: accentColor }}
-                                            />
-                                            <motion.button
-                                                whileHover={{ scale: 1.05 }}
-                                                whileTap={{ scale: 0.95 }}
-                                                onClick={handleRandomizeUuid}
-                                                className="p-2 rounded-lg bg-white/10 text-white/70 hover:bg-white/20"
-                                                title={t('Generate Random UUID')}
-                                            >
-                                                <Shuffle size={16} />
-                                            </motion.button>
-                                            <motion.button
-                                                whileHover={{ scale: 1.05 }}
-                                                whileTap={{ scale: 0.95 }}
-                                                onClick={handleSaveUuid}
-                                                className="p-2 rounded-lg"
-                                                style={{ backgroundColor: `${accentColor}33`, color: accentColor }}
-                                                title={t('Save UUID')}
-                                            >
-                                                <Check size={16} />
-                                            </motion.button>
-                                        </div>
-                                    ) : (
-                                        <p className="text-white font-mono text-sm truncate">{uuid}</p>
+                                    {/* Save Status */}
+                                    {saveStatus === 'saved' && (
+                                        <motion.div
+                                            initial={{ opacity: 0, y: 10 }}
+                                            animate={{ opacity: 1, y: 0 }}
+                                            exit={{ opacity: 0 }}
+                                            className="flex items-center justify-center gap-2 text-green-400 text-sm"
+                                        >
+                                            <CheckCircle size={16} />
+                                            {t('Profile saved!')}
+                                        </motion.div>
                                     )}
                                 </div>
-
-                                {/* Save Status */}
-                                {saveStatus === 'saved' && (
-                                    <motion.div
-                                        initial={{ opacity: 0, y: 10 }}
-                                        animate={{ opacity: 1, y: 0 }}
-                                        exit={{ opacity: 0 }}
-                                        className="flex items-center justify-center gap-2 text-green-400 text-sm"
-                                    >
-                                        <CheckCircle size={16} />
-                                        {t('Profile saved!')}
-                                    </motion.div>
-                                )}
-                            </div>
-                        )}
+                            )}
+                        </div>
                     </div>
                 </motion.div>
             </motion.div>
         </AnimatePresence>
     );
 };
-
-// Keep the old export name for backwards compatibility
-export const SkinEditor = ProfileEditor;
 
 export default ProfileEditor;

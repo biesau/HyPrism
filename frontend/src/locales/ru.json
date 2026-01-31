@@ -127,5 +127,20 @@
     "Offline Mode": "Оффлайн режим",
     "Online Mode (Click to disable)": "Онлайн режим (Нажмите для отключения)",
     "Offline Mode (Click to enable online)": "Оффлайн режим (Нажмите для включения онлайна)",
-    "Report Issue": "Сообщить об ошибке"
+    "Report Issue": "Сообщить об ошибке",
+    "Saved Profiles": "Сохранённые Профили",
+    "Save Current Profile": "Сохранить Текущий Профиль",
+    "Create New Profile": "Создать Новый Профиль",
+    "Delete Profile": "Удалить Профиль",
+    "Profile name...": "Имя профиля...",
+    "No saved profiles yet": "Пока нет сохранённых профилей",
+    "Profile saved!": "Профиль сохранён!",
+    "Profile Editor": "Редактор Профиля",
+    "Your player avatar": "Ваш аватар игрока",
+    "Edit Username": "Изменить Имя Пользователя",
+    "Player UUID": "UUID Игрока",
+    "Copy UUID": "Копировать UUID",
+    "Edit UUID": "Изменить UUID",
+    "Generate Random UUID": "Сгенерировать Случайный UUID",
+    "Save UUID": "Сохранить UUID"
 }

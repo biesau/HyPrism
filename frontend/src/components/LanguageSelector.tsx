@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { Check } from 'lucide-react';
 import { GameBranch, Language } from '../constants/enums';
 import { LANGUAGE_CONFIG } from '../constants/languages';
-import { GetInstanceInstalledMods } from '../../wailsjs/go/app/App';
+import { GetInstanceInstalledMods, SetGameLanguage } from '../../wailsjs/go/app/App';
 import { useAccentColor } from '../contexts/AccentColorContext';
 
 interface LanguageSelectorProps {
@@ -18,7 +18,7 @@ export const LanguageSelector: React.FC<LanguageSelectorProps> = ({
     onShowModManager
 }) => {
     const { i18n, t } = useTranslation();
-    const { accentColor } = useAccentColor();
+    const { accentColor, accentTextColor } = useAccentColor();
     const [isOpen, setIsOpen] = useState(false);
     const dropdownRef = useRef<HTMLDivElement>(null);
     const [showConfirm, setShowConfirm] = useState<{ langName: string; langCode: string; searchQuery: string } | null>(null);
@@ -27,6 +27,14 @@ export const LanguageSelector: React.FC<LanguageSelectorProps> = ({
     const handleLanguageSelect = async (langCode: Language) => {
         i18n.changeLanguage(langCode);
         setIsOpen(false);
+
+        // Update game language files
+        try {
+            await SetGameLanguage(langCode);
+            console.log(`Game language set to: ${langCode}`);
+        } catch (error) {
+            console.warn('Failed to set game language:', error);
+        }
 
         if (localStorage.getItem('suppressTranslationPrompt') === 'true') {
             return;
@@ -154,8 +162,8 @@ export const LanguageSelector: React.FC<LanguageSelectorProps> = ({
                             </button>
                             <button
                                 onClick={handleConfirmInstall}
-                                className="flex-1 py-2 rounded-xl text-black text-sm font-medium shadow-lg transition-all hover:opacity-90"
-                                style={{ backgroundColor: accentColor, boxShadow: `0 10px 15px -3px ${accentColor}33` }}
+                                className="flex-1 py-2 rounded-xl text-sm font-medium shadow-lg transition-all hover:opacity-90"
+                                style={{ backgroundColor: accentColor, color: accentTextColor, boxShadow: `0 10px 15px -3px ${accentColor}33` }}
                             >
                                 {t('Yes, search')}
                             </button>

@@ -127,5 +127,20 @@
     "Offline Mode": "オフラインモード",
     "Online Mode (Click to disable)": "オンラインモード（クリックで無効化）",
     "Offline Mode (Click to enable online)": "オフラインモード（クリックでオンラインを有効化）",
-    "Report Issue": "問題を報告"
+    "Report Issue": "問題を報告",
+    "Saved Profiles": "保存済みプロフィール",
+    "Save Current Profile": "現在のプロフィールを保存",
+    "Create New Profile": "新しいプロフィールを作成",
+    "Delete Profile": "プロフィールを削除",
+    "Profile name...": "プロフィール名...",
+    "No saved profiles yet": "保存されたプロフィールはまだありません",
+    "Profile saved!": "プロフィールを保存しました！",
+    "Profile Editor": "プロフィールエディター",
+    "Your player avatar": "プレイヤーアバター",
+    "Edit Username": "ユーザー名を編集",
+    "Player UUID": "プレイヤーUUID",
+    "Copy UUID": "UUIDをコピー",
+    "Edit UUID": "UUIDを編集",
+    "Generate Random UUID": "ランダムUUIDを生成",
+    "Save UUID": "UUIDを保存"
 }
