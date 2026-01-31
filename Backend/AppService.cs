@@ -4768,12 +4768,53 @@ exec env \
 
         try
         {
-            // Fetch latest release assets
+            var launcherBranch = GetLauncherBranch();
+            var isBetaChannel = launcherBranch == "beta";
+            var currentVersion = GetLauncherVersion();
+            
+            // Get all releases to find the best match for user's channel
             // TESTING: Using TEST repo instead of HyPrism
-            var apiUrl = "https://api.github.com/repos/yyyumeniku/TEST/releases/latest";
+            var apiUrl = "https://api.github.com/repos/yyyumeniku/TEST/releases?per_page=50";
             var json = await HttpClient.GetStringAsync(apiUrl);
             using var doc = JsonDocument.Parse(json);
-            var assets = doc.RootElement.GetProperty("assets");
+            
+            // Find the best release for the user's channel
+            JsonElement? targetRelease = null;
+            string? targetVersion = null;
+            
+            foreach (var release in doc.RootElement.EnumerateArray())
+            {
+                var isPrerelease = release.TryGetProperty("prerelease", out var prereleaseVal) && prereleaseVal.GetBoolean();
+                
+                // Match channel
+                if (isBetaChannel && !isPrerelease) continue; // Beta wants prereleases
+                if (!isBetaChannel && isPrerelease) continue; // Stable wants releases
+                
+                var tagName = release.GetProperty("tag_name").GetString();
+                if (string.IsNullOrWhiteSpace(tagName)) continue;
+                
+                var version = ParseVersionFromTag(tagName);
+                if (string.IsNullOrWhiteSpace(version)) continue;
+                
+                // Take the first matching release (they're sorted newest first)
+                if (targetRelease == null)
+                {
+                    targetRelease = release;
+                    targetVersion = version;
+                    break;
+                }
+            }
+            
+            if (!targetRelease.HasValue || string.IsNullOrWhiteSpace(targetVersion))
+            {
+                Logger.Error("Update", $"No suitable {(isBetaChannel ? "pre-release" : "release")} found");
+                BrowserOpenURL(releasesPage);
+                return false;
+            }
+            
+            Logger.Info("Update", $"Downloading {(isBetaChannel ? "pre-release" : "release")} {targetVersion} (current: {currentVersion})");
+            
+            var assets = targetRelease.Value.GetProperty("assets");
 
             // Pick asset by platform/arch
             string? targetAsset = null;
@@ -4837,24 +4878,113 @@ exec env \
                 }
             }
 
-            // Platform-specific post-step
+            // Platform-specific installation
             if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
             {
-                var appPath = "/Applications/HyPrism.app";
-                if (Directory.Exists(appPath))
+                try
                 {
-                    try
+                    Logger.Info("Update", "Mounting DMG and installing...");
+                    
+                    // Mount the DMG
+                    var mountProcess = Process.Start(new ProcessStartInfo
                     {
-                        Logger.Warning("Update", "Removing existing /Applications/HyPrism.app");
-                        Directory.Delete(appPath, recursive: true);
-                    }
-                    catch (Exception deleteEx)
+                        FileName = "hdiutil",
+                        Arguments = $"attach \"{targetPath}\" -nobrowse -readonly",
+                        RedirectStandardOutput = true,
+                        UseShellExecute = false,
+                        CreateNoWindow = true
+                    });
+                    
+                    if (mountProcess == null)
                     {
-                        Logger.Warning("Update", $"Failed to delete old app: {deleteEx.Message}");
+                        throw new Exception("Failed to mount DMG");
                     }
+                    
+                    await mountProcess.WaitForExitAsync();
+                    var mountOutput = await mountProcess.StandardOutput.ReadToEndAsync();
+                    
+                    // Parse mount point from hdiutil output (last line, last column)
+                    var mountPoint = mountOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                        .LastOrDefault()?
+                        .Split('\t', StringSplitOptions.RemoveEmptyEntries)
+                        .LastOrDefault()?
+                        .Trim();
+                    
+                    if (string.IsNullOrWhiteSpace(mountPoint) || !Directory.Exists(mountPoint))
+                    {
+                        throw new Exception($"Could not find mount point. Output: {mountOutput}");
+                    }
+                    
+                    Logger.Info("Update", $"DMG mounted at: {mountPoint}");
+                    
+                    // Find the .app in the mounted DMG
+                    var appInDmg = Directory.GetDirectories(mountPoint, "*.app").FirstOrDefault();
+                    if (string.IsNullOrWhiteSpace(appInDmg) || !Directory.Exists(appInDmg))
+                    {
+                        Process.Start("hdiutil", $"detach \"{mountPoint}\" -force");
+                        throw new Exception("No .app found in DMG");
+                    }
+                    
+                    // Get current app path
+                    var currentExe = Environment.ProcessPath;
+                    if (string.IsNullOrEmpty(currentExe))
+                    {
+                        Process.Start("hdiutil", $"detach \"{mountPoint}\" -force");
+                        throw new Exception("Could not determine current executable path");
+                    }
+                    
+                    // Navigate up to get the .app bundle path
+                    // currentExe is likely: /Applications/HyPrism.app/Contents/MacOS/HyPrism
+                    var currentAppPath = currentExe;
+                    for (int i = 0; i < 3; i++) // Go up 3 levels to get to .app
+                    {
+                        currentAppPath = Path.GetDirectoryName(currentAppPath);
+                        if (string.IsNullOrEmpty(currentAppPath)) break;
+                    }
+                    
+                    if (string.IsNullOrEmpty(currentAppPath) || !currentAppPath.EndsWith(".app"))
+                    {
+                        Process.Start("hdiutil", $"detach \"{mountPoint}\" -force");
+                        throw new Exception($"Could not determine .app path from: {currentExe}");
+                    }
+                    
+                    Logger.Info("Update", $"Current app: {currentAppPath}");
+                    Logger.Info("Update", $"New app: {appInDmg}");
+                    
+                    // Create update script to replace app and restart
+                    var updateScript = Path.Combine(Path.GetTempPath(), "hyprism_update.sh");
+                    var scriptContent = $@"#!/bin/bash
+sleep 2
+rm -rf ""{currentAppPath}""
+cp -R ""{appInDmg}"" ""{currentAppPath}""
+hdiutil detach ""{mountPoint}"" -force
+rm -f ""{targetPath}""
+open ""{currentAppPath}""
+rm -f ""$0""
+";
+                    
+                    File.WriteAllText(updateScript, scriptContent);
+                    Process.Start("chmod", $"+x \"{updateScript}\"")?.WaitForExit();
+                    
+                    // Start the update script and exit
+                    Process.Start(new ProcessStartInfo
+                    {
+                        FileName = "/bin/bash",
+                        Arguments = $"\"{updateScript}\"",
+                        UseShellExecute = false,
+                        CreateNoWindow = true
+                    });
+                    
+                    Logger.Info("Update", "Update script started, exiting launcher...");
+                    Environment.Exit(0);
                 }
-
-                try { Process.Start("open", targetPath); } catch (Exception openEx) { Logger.Warning("Update", $"Could not open DMG: {openEx.Message}"); }
+                catch (Exception macEx)
+                {
+                    Logger.Error("Update", $"Auto-update failed: {macEx.Message}");
+                    // Fallback: open the DMG manually
+                    try { Process.Start("open", targetPath); } catch { }
+                    throw new Exception($"Please install the update manually from Downloads. {macEx.Message}");
+                }
             }
             else if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
             {
@@ -4902,7 +5032,58 @@ del ""%~f0""
             }
             else if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
             {
-                try { Process.Start("xdg-open", targetPath); } catch (Exception openEx) { Logger.Warning("Update", $"Could not open file manager: {openEx.Message}"); }
+                try
+                {
+                    var currentExe = Environment.ProcessPath;
+                    if (string.IsNullOrEmpty(currentExe))
+                    {
+                        throw new Exception("Could not determine current executable path");
+                    }
+                    
+                    // For AppImage, just replace the file
+                    if (targetPath.EndsWith(".AppImage", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // Make the new AppImage executable
+                        Process.Start("chmod", $"+x \"{targetPath}\"")?.WaitForExit();
+                        
+                        // Create update script
+                        var updateScript = Path.Combine(Path.GetTempPath(), "hyprism_update.sh");
+                        var scriptContent = $@"#!/bin/bash
+sleep 2
+rm -f ""{currentExe}""
+mv ""{targetPath}"" ""{currentExe}""
+chmod +x ""{currentExe}""
+""{currentExe}"" &
+rm -f ""$0""
+";
+                        File.WriteAllText(updateScript, scriptContent);
+                        Process.Start("chmod", $"+x \"{updateScript}\"")?.WaitForExit();
+                        
+                        // Start the update script and exit
+                        Process.Start(new ProcessStartInfo
+                        {
+                            FileName = "/bin/bash",
+                            Arguments = $"\"{updateScript}\"",
+                            UseShellExecute = false,
+                            CreateNoWindow = true
+                        });
+                        
+                        Logger.Info("Update", "Update script started, exiting launcher...");
+                        Environment.Exit(0);
+                    }
+                    else
+                    {
+                        // For other formats, just open the file manager
+                        try { Process.Start("xdg-open", Path.GetDirectoryName(targetPath) ?? ""); } catch { }
+                        throw new Exception("Please install the update manually from Downloads.");
+                    }
+                }
+                catch (Exception linuxEx)
+                {
+                    Logger.Error("Update", $"Auto-update failed: {linuxEx.Message}");
+                    try { Process.Start("xdg-open", targetPath); } catch { }
+                    throw new Exception($"Please install the update manually from Downloads. {linuxEx.Message}");
+                }
             }
 
             return true;
