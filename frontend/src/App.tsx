@@ -24,6 +24,8 @@ const OnboardingModal = lazy(() => import('./components/OnboardingModal').then(m
 import type { VersionStatus } from './api/backend';
 import {
   DownloadAndLaunch,
+  DownloadOnly,
+  LaunchOnly,
   OpenInstanceFolder,
   GetNick,
   SetNick,
@@ -170,7 +172,6 @@ const App: React.FC = () => {
   const [isCheckingInstalled, setIsCheckingInstalled] = useState<boolean>(false);
   const [customInstanceDir, setCustomInstanceDir] = useState<string>("");
   const [versionStatus, setVersionStatus] = useState<VersionStatus | null>(null);
-  const [updateSkipped, setUpdateSkipped] = useState<boolean>(false);
 
   // Background, news, and accent color settings
   const [backgroundMode, setBackgroundMode] = useState<string>('slideshow');
@@ -191,19 +192,22 @@ const App: React.FC = () => {
 
   // Check if current version is installed when branch or version changes
   useEffect(() => {
+    console.log('[checkInstalled] Effect triggered, currentVersion:', currentVersion, 'currentBranch:', currentBranch);
     const checkInstalled = async () => {
       if (currentVersion === 0) {
+        console.log('[checkInstalled] currentVersion is 0, checking latest instance...');
         // Version 0 is the auto-updating "latest" instance
         // Check if it's actually installed
         setIsCheckingInstalled(true);
         try {
           const installed = await IsVersionInstalled(currentBranch, 0);
+          console.log('[checkInstalled] IsVersionInstalled result:', installed);
           setIsVersionInstalled(installed);
           // Get version status (not_installed, update_available, or current)
+          console.log('[checkInstalled] Calling GetLatestVersionStatus...');
           const status = await GetLatestVersionStatus(currentBranch);
+          console.log('[checkInstalled] GetLatestVersionStatus response:', status);
           setVersionStatus(status);
-          // Reset skip state when branch changes
-          setUpdateSkipped(false);
         } catch (e) {
           console.error('Failed to check latest instance:', e);
           setIsVersionInstalled(false);
@@ -429,6 +433,15 @@ const App: React.FC = () => {
           setCurrentVersion(0);
           await SetSelectedVersion(0);
           setIsVersionInstalled(true);
+          // Get version status for latest instance
+          try {
+            const status = await GetLatestVersionStatus(branch);
+            console.log('loadSettings: GetLatestVersionStatus response:', status);
+            setVersionStatus(status);
+          } catch (e) {
+            console.error('Failed to get version status:', e);
+            setVersionStatus(null);
+          }
         } else if (installed && installed.length > 0) {
           // If latest not installed but other versions exist, select the highest installed version
           const highestInstalled = Math.max(...installed.filter(v => v > 0));
@@ -447,6 +460,15 @@ const App: React.FC = () => {
           setCurrentVersion(0);
           await SetSelectedVersion(0);
           setIsVersionInstalled(false);
+          // Get version status even if not installed (will show not_installed)
+          try {
+            const status = await GetLatestVersionStatus(branch);
+            console.log('loadSettings (not installed): GetLatestVersionStatus response:', status);
+            setVersionStatus(status);
+          } catch (e) {
+            console.error('Failed to get version status:', e);
+            setVersionStatus(null);
+          }
         }
 
         setIsLoadingVersions(false);
@@ -624,7 +646,25 @@ const App: React.FC = () => {
       }
     }
 
-    doLaunch();
+    // If there's an update available and user is on latest (version 0), 
+    // use LaunchOnly to skip the update check
+    if (currentVersion === 0 && versionStatus?.status === 'update_available') {
+      doLaunchOnly();
+    } else {
+      doLaunch();
+    }
+  };
+
+  const doLaunchOnly = async () => {
+    setIsDownloading(true);
+    setDownloadState('launching');
+    try {
+      await LaunchOnly();
+      // Button state will be managed by progress events
+    } catch (err) {
+      console.error('Launch failed:', err);
+      setIsDownloading(false);
+    }
   };
 
   const doLaunch = async () => {
@@ -642,16 +682,20 @@ const App: React.FC = () => {
   };
 
   const handleGameUpdate = async () => {
-    // Force the update by resetting the version info in latest.json
+    // Trigger update/download for the latest instance
+    setIsDownloading(true);
+    setDownloadState('downloading');
     try {
-      await ForceUpdateLatest(currentBranch);
-      // After forcing, set versionStatus to null since we're about to update
-      setVersionStatus(null);
+      // Download/update the latest version without launching
+      await DownloadOnly();
+      // Button state will be managed by progress events
+      // After download completes, refresh version status
+      const status = await GetLatestVersionStatus(currentBranch);
+      setVersionStatus(status);
     } catch (err) {
-      console.error('Failed to force update:', err);
+      console.error('Update failed:', err);
+      setIsDownloading(false);
     }
-    // Now launch which will trigger the differential update
-    doLaunch();
   };
 
   const handleGameDuplicate = async () => {
@@ -670,10 +714,6 @@ const App: React.FC = () => {
     } catch (err) {
       console.error('Failed to duplicate latest:', err);
     }
-  };
-
-  const handleSkipUpdate = () => {
-    setUpdateSkipped(true);
   };
 
   const handleUpdateConfirmWithCopy = async () => {
@@ -791,7 +831,6 @@ const App: React.FC = () => {
         if (currentVersion === 0) {
           const status = await GetLatestVersionStatus(currentBranch);
           setVersionStatus(status);
-          setUpdateSkipped(false);
         }
       } catch (e) {
         console.error('Failed to reload versions after directory change:', e);
@@ -922,7 +961,6 @@ const App: React.FC = () => {
           onDownload={handlePlay}
           onUpdate={handleGameUpdate}
           onDuplicate={handleGameDuplicate}
-          onSkip={handleSkipUpdate}
           onExit={handleExit}
           onCancelDownload={handleCancelDownload}
           isDownloading={isDownloading}

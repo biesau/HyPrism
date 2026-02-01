@@ -313,9 +313,9 @@ export const CheckLatestNeedsUpdate = (branch: string) => callBackend<boolean>('
  */
 export interface VersionStatus {
     /** Status: "not_installed", "update_available", "current", "none", "error" */
-    Status: 'not_installed' | 'update_available' | 'current' | 'none' | 'error';
-    InstalledVersion: number;
-    LatestVersion: number;
+    status: 'not_installed' | 'update_available' | 'current' | 'none' | 'error';
+    installedVersion: number;
+    latestVersion: number;
 }
 
 /**
@@ -443,11 +443,15 @@ export const DeleteGame = (branch: string, version: number) => callBackend<boole
 export const DownloadAndLaunch = (version: string) => callBackend<void>('DownloadAndLaunch', version);
 
 /**
- * Only downloads a specific version without launching
- * @param branch - The game branch
- * @param version - The release name/version string
+ * Downloads/updates the game without launching. Used by the UPDATE button.
  */
-export const DownloadVersion = (branch: string, version: string) => callBackend<void>('DownloadVersion', branch, version);
+export const DownloadOnly = () => callBackend<void>('DownloadOnly');
+
+/**
+ * Launches the currently installed game without checking for updates.
+ * Used by the PLAY button when there's an available update that the user wants to skip.
+ */
+export const LaunchOnly = () => callBackend<void>('LaunchOnly');
 
 /**
  * Requests the game process to exit

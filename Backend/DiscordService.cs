@@ -34,6 +34,9 @@ public class DiscordService : IDisposable
             _client = new DiscordRpcClient(ApplicationId);
             _client.Logger = new ConsoleLogger() { Level = LogLevel.Error };
             
+            // Set SkipIdenticalPresence to false to avoid Merge issues
+            _client.SkipIdenticalPresence = false;
+            
             _client.OnReady += (sender, e) =>
             {
                 Logger.Info("Discord", $"Connected to Discord as {e.User.Username}");
@@ -73,17 +76,17 @@ public class DiscordService : IDisposable
 
         try
         {
-            var assets = new Assets
-            {
-                LargeImageKey = "hyprism_logo",
-                LargeImageText = "HyPrism Launcher",
-                SmallImageKey = "hyprism_logo",
-                SmallImageText = "HyPrism"
-            };
-
             var presence = new RichPresence
             {
-                Assets = assets
+                Details = "In Launcher",
+                State = "Browsing versions",
+                Assets = new Assets
+                {
+                    LargeImageKey = "hyprism_logo",
+                    LargeImageText = "HyPrism Launcher",
+                    SmallImageKey = "hyprism_logo",
+                    SmallImageText = "HyPrism"
+                }
             };
 
             switch (state)
@@ -92,39 +95,53 @@ public class DiscordService : IDisposable
                     presence.Details = "In Launcher";
                     presence.State = "Browsing versions";
                     presence.Timestamps = new Timestamps(_startTime);
-                    presence.Assets.SmallImageKey = "hyprism_logo";
-                    presence.Assets.SmallImageText = "Idle";
+                    if (presence.Assets != null)
+                    {
+                        presence.Assets.SmallImageKey = "hyprism_logo";
+                        presence.Assets.SmallImageText = "Idle";
+                    }
                     break;
 
                 case PresenceState.Downloading:
                     presence.Details = "Downloading Hytale";
                     presence.State = details ?? "Preparing...";
-                    presence.Assets.SmallImageKey = "download";
-                    presence.Assets.SmallImageText = "Downloading";
+                    if (presence.Assets != null)
+                    {
+                        presence.Assets.SmallImageKey = "download";
+                        presence.Assets.SmallImageText = "Downloading";
+                    }
                     break;
 
                 case PresenceState.Installing:
                     presence.Details = "Installing Hytale";
                     presence.State = details ?? "Extracting...";
-                    presence.Assets.SmallImageKey = "install";
-                    presence.Assets.SmallImageText = "Installing";
+                    if (presence.Assets != null)
+                    {
+                        presence.Assets.SmallImageKey = "install";
+                        presence.Assets.SmallImageText = "Installing";
+                    }
                     break;
 
                 case PresenceState.Playing:
                     presence.Details = "Playing Hytale";
                     presence.State = details ?? "In Game";
                     presence.Timestamps = new Timestamps(DateTime.UtcNow);
-                    presence.Assets.SmallImageKey = "playing";
-                    presence.Assets.SmallImageText = "Playing";
+                    if (presence.Assets != null)
+                    {
+                        presence.Assets.SmallImageKey = "playing";
+                        presence.Assets.SmallImageText = "Playing";
+                    }
                     break;
             }
 
-                    // Guard against library null handling issues by ensuring assets and texts are always populated
-                    presence.Assets ??= assets;
-                    presence.Assets.LargeImageKey ??= "hyprism_logo";
-                    presence.Assets.LargeImageText ??= "HyPrism Launcher";
-                    presence.Assets.SmallImageKey ??= "hyprism_logo";
-                    presence.Assets.SmallImageText ??= "HyPrism";
+            // Ensure assets are always populated to prevent null reference
+            if (presence.Assets != null)
+            {
+                presence.Assets.LargeImageKey ??= "hyprism_logo";
+                presence.Assets.LargeImageText ??= "HyPrism Launcher";
+                presence.Assets.SmallImageKey ??= "hyprism_logo";
+                presence.Assets.SmallImageText ??= "HyPrism";
+            }
 
             _client.SetPresence(presence);
         }

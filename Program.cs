@@ -2,6 +2,7 @@
 using System.IO;
 using System.Net;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading;
@@ -10,6 +11,45 @@ using Photino.NET;
 using HyPrism.Backend;
 
 namespace HyPrism;
+
+internal sealed class FilteringTextWriter : TextWriter
+{
+    private readonly TextWriter _inner;
+    private readonly string[] _suppressTokens;
+
+    public FilteringTextWriter(TextWriter inner, string[] suppressTokens)
+    {
+        _inner = inner;
+        _suppressTokens = suppressTokens;
+    }
+
+    public override Encoding Encoding => _inner.Encoding;
+
+    public override void Write(string? value)
+    {
+        if (ShouldSuppress(value)) return;
+        _inner.Write(value);
+    }
+
+    public override void WriteLine(string? value)
+    {
+        if (ShouldSuppress(value)) return;
+        _inner.WriteLine(value);
+    }
+
+    private bool ShouldSuppress(string? value)
+    {
+        if (string.IsNullOrEmpty(value)) return false;
+        foreach (var token in _suppressTokens)
+        {
+            if (value.Contains(token, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+}
 
 class Program
 {
@@ -87,6 +127,11 @@ class Program
         
         // Load from local HTTP server (bypasses file:// security restrictions)
         window.Load($"http://localhost:{_port}/index.html");
+        
+                // Suppress noisy Photino debug output on stdout/stderr while keeping our own logs
+                // Photino writes lines like: Photino.NET: "HyPrism".Load(...)
+                Console.SetOut(new FilteringTextWriter(Console.Out, new[] { "Photino.NET:" }));
+                Console.SetError(new FilteringTextWriter(Console.Error, new[] { "Photino.NET:" }));
         
         Logger.Success("HyPrism", "Launcher started");
         
@@ -244,7 +289,7 @@ class Program
                         "IsVersionInstalled" => app.IsVersionInstalled(GetArg<string>(request.Args, 0), GetArg<int>(request.Args, 1)),
                         "GetInstalledVersionsForBranch" => app.GetInstalledVersionsForBranch(GetArg<string>(request.Args, 0)),
                         "CheckLatestNeedsUpdate" => await app.CheckLatestNeedsUpdateAsync(GetArg<string>(request.Args, 0)),
-                        "GetLatestVersionStatus" => await app.GetLatestVersionStatusAsync(GetArg<string>(request.Args, 0)),
+                        "GetLatestVersionStatus" => await GetLatestVersionStatusWithLogging(app, GetArg<string>(request.Args, 0)),
                         "GetPendingUpdateInfo" => await app.GetPendingUpdateInfoAsync(GetArg<string>(request.Args, 0)),
                         "CopyUserData" => await app.CopyUserDataAsync(GetArg<string>(request.Args, 0), GetArg<int>(request.Args, 1), GetArg<int>(request.Args, 2)),
                         "ForceUpdateLatest" => await app.ForceUpdateLatestAsync(GetArg<string>(request.Args, 0)),
@@ -256,6 +301,8 @@ class Program
                         
                         // Game
                         "DownloadAndLaunch" => await app.DownloadAndLaunchAsync(window),
+                        "DownloadOnly" => await app.DownloadOnlyAsync(),
+                        "LaunchOnly" => await app.LaunchOnlyAsync(),
                         "CancelDownload" => app.CancelDownload(),
                         "IsGameRunning" => app.IsGameRunning(),
                         "GetRecentLogs" => app.GetRecentLogs(GetArg<int>(request.Args, 0)),
@@ -454,6 +501,13 @@ class Program
             return default!;
         
         return JsonSerializer.Deserialize<T>(args[index].GetRawText())!;
+    }
+    
+    static async Task<VersionStatus> GetLatestVersionStatusWithLogging(AppService app, string branch)
+    {
+        var status = await app.GetLatestVersionStatusAsync(branch);
+        Logger.Info("RPC", $"GetLatestVersionStatus returned: Status={status.Status}, Installed={status.InstalledVersion}, Latest={status.LatestVersion}");
+        return status;
     }
 }
 

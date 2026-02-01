@@ -213,18 +213,15 @@ public class AppService : IDisposable
         return versionType;
     }
 
-    private sealed class LatestInstanceInfo
-    {
-        public int Version { get; set; }
-        public DateTime UpdatedAt { get; set; }
-    }
-
     // Instance tracking info (stored in instance.json)
+    // This replaces both the old latest.json and instance.json - all instance data in one file
     private sealed class InstanceInfo
     {
         public int Version { get; set; }
         public DateTime CreatedAt { get; set; }
+        public DateTime UpdatedAt { get; set; }  // When the version was last updated (from latest.json)
         public long PlayTimeSeconds { get; set; } = 0;
+        public bool IsLatestInstance { get; set; } = false;  // True for "latest" instance, false for specific version instances
         
         // Helper to format playtime as DD:HH:MM:SS
         public string GetFormattedPlayTime()
@@ -1143,17 +1140,35 @@ public class AppService : IDisposable
 
     private string GetLatestInfoPath(string branch)
     {
-        return Path.Combine(GetLatestInstancePath(branch), "latest.json");
+        // Now uses instance.json instead of latest.json (merged)
+        return Path.Combine(GetLatestInstancePath(branch), "instance.json");
     }
 
-    private LatestInstanceInfo? LoadLatestInfo(string branch)
+    private InstanceInfo? LoadLatestInfo(string branch)
     {
         try
         {
             var path = GetLatestInfoPath(branch);
-            if (!File.Exists(path)) return null;
+            if (!File.Exists(path))
+            {
+                // Migration: try to load old latest.json if it exists
+                var oldPath = Path.Combine(GetLatestInstancePath(branch), "latest.json");
+                if (File.Exists(oldPath))
+                {
+                    var oldJson = File.ReadAllText(oldPath);
+                    var oldInfo = JsonSerializer.Deserialize<InstanceInfo>(oldJson, JsonOptions);
+                    if (oldInfo != null)
+                    {
+                        // Migrate to new instance.json
+                        SaveLatestInfo(branch, oldInfo.Version);
+                        try { File.Delete(oldPath); } catch { }
+                        return oldInfo;
+                    }
+                }
+                return null;
+            }
             var json = File.ReadAllText(path);
-            return JsonSerializer.Deserialize<LatestInstanceInfo>(json, JsonOptions);
+            return JsonSerializer.Deserialize<InstanceInfo>(json, JsonOptions);
         }
         catch
         {
@@ -1161,18 +1176,42 @@ public class AppService : IDisposable
         }
     }
 
-    private void SaveLatestInfo(string branch, int version)
+    private void SaveLatestInfo(string branch, int version, bool isLatestInstance = true)
     {
         try
         {
             // Must create GetLatestInstancePath (e.g., /release/latest/) not just GetBranchPath (e.g., /release/)
-            // because latest.json lives inside the latest folder
+            // because instance.json lives inside the latest folder
             Directory.CreateDirectory(GetLatestInstancePath(branch));
-            var info = new LatestInstanceInfo { Version = version, UpdatedAt = DateTime.UtcNow };
-            var json = JsonSerializer.Serialize(info, new JsonSerializerOptions(JsonOptions) { WriteIndented = true });
+            
+            // Load existing info to preserve PlayTimeSeconds and CreatedAt
             var path = GetLatestInfoPath(branch);
+            InstanceInfo info;
+            if (File.Exists(path))
+            {
+                try
+                {
+                    var existingJson = File.ReadAllText(path);
+                    info = JsonSerializer.Deserialize<InstanceInfo>(existingJson, JsonOptions) ?? new InstanceInfo();
+                }
+                catch
+                {
+                    info = new InstanceInfo { CreatedAt = DateTime.UtcNow };
+                }
+            }
+            else
+            {
+                info = new InstanceInfo { CreatedAt = DateTime.UtcNow };
+            }
+            
+            // Update version, timestamp, and isLatestInstance flag
+            info.Version = version;
+            info.UpdatedAt = DateTime.UtcNow;
+            info.IsLatestInstance = isLatestInstance;
+            
+            var json = JsonSerializer.Serialize(info, new JsonSerializerOptions(JsonOptions) { WriteIndented = true });
             File.WriteAllText(path, json);
-            Logger.Info("LatestInfo", $"Saved version {version} to {path}");
+            Logger.Info("LatestInfo", $"Saved version {version} (isLatest: {isLatestInstance}) to {path}");
         }
         catch (Exception ex)
         {
@@ -2236,8 +2275,8 @@ public class AppService : IDisposable
             _config.UserUuids ??= new Dictionary<string, string>();
             _config.UserUuids[profile.Name] = profile.UUID;
             
-            // Switch mods symlink to the new profile's mods folder
-            SwitchProfileModsSymlink(profile);
+            // Switch UserData symlink to the new profile's UserData folder
+            SwitchProfileUserDataSymlink(profile);
             
             SaveConfig();
             
@@ -2320,6 +2359,20 @@ public class AppService : IDisposable
     
     /// <summary>
     /// Switches the UserData symlink to point to the new profile's UserData folder.
+    /// Called when switching between profiles to redirect the game's UserData to the new profile.
+    /// This will be applied on next game launch.
+    /// </summary>
+    private void SwitchProfileUserDataSymlink(Profile profile)
+    {
+        // The UserData symlink will be created/updated when the game is launched
+        // Just ensure the profile's UserData folder exists
+        var profileUserDataPath = GetProfileUserDataFolder(profile);
+        Directory.CreateDirectory(profileUserDataPath);
+        Logger.Success("UserData", $"Profile UserData folder ready for '{profile.Name}': {profileUserDataPath}");
+    }
+    
+    /// <summary>
+    /// Switches the mods symlink (legacy method name, kept for compatibility)
     /// </summary>
     private void SwitchProfileModsSymlink(Profile profile)
     {
@@ -3783,30 +3836,31 @@ export HYPRISM_PROFILE_ID=""{profile.Id}""
             
             if (info == null)
             {
-                // Game is installed but no version tracking
-                // Check if there's a Butler receipt which means the game was properly installed
-                var receiptPath = Path.Combine(latestPath, ".itch", "receipt.json.gz");
-                if (File.Exists(receiptPath))
-                {
-                    // Butler receipt exists - assume it's at the latest version since we can't determine
-                    // Create the latest.json now so future checks work correctly
-                    SaveLatestInfo(normalizedBranch, latestAvailable);
-                    return new VersionStatus { Status = "current", InstalledVersion = latestAvailable, LatestVersion = latestAvailable };
-                }
-                
-                // No receipt - could be a legacy install, show update available
+                // Game is installed but no instance.json - this shouldn't happen normally
+                // Don't create instance.json here - it should only be created during download/install
+                // Just report that an update is available so the UPDATE button appears
                 return new VersionStatus { Status = "update_available", InstalledVersion = 0, LatestVersion = latestAvailable };
+            }
+            
+            // Only check for updates if this is a "latest" instance
+            // Regular versioned instances (isLatestInstance=false) should never show update available
+            if (!info.IsLatestInstance)
+            {
+                // This is a specific version instance, not auto-updating
+                return new VersionStatus { Status = "current", InstalledVersion = info.Version, LatestVersion = latestAvailable };
             }
             
             if (info.Version < latestAvailable)
             {
-                // Update available
+                // Update available (only for latest instances)
+                Logger.Info("VersionStatus", $"⚠️ Latest instance needs update: v{info.Version} -> v{latestAvailable}");
                 return new VersionStatus { Status = "update_available", InstalledVersion = info.Version, LatestVersion = latestAvailable };
             }
             
             if (info.Version == latestAvailable)
             {
                 // Current version - can duplicate
+                Logger.Info("VersionStatus", $"✓ Latest instance is up to date: v{info.Version}");
                 return new VersionStatus { Status = "current", InstalledVersion = info.Version, LatestVersion = latestAvailable };
             }
             
@@ -3884,6 +3938,17 @@ export HYPRISM_PROFILE_ID=""{profile.Id}""
                     completedFolders++;
                 }
             });
+            
+            // Create instance.json for the versioned instance with isLatestInstance=false
+            var versionedInfo = new InstanceInfo
+            {
+                Version = info.Version,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow,
+                PlayTimeSeconds = 0,
+                IsLatestInstance = false  // Versioned instances are NOT auto-updating
+            };
+            SaveInstanceInfo(normalizedBranch, info.Version, versionedInfo);
             
             Logger.Success("Duplicate", $"Successfully duplicated v{info.Version} (assets + Client)");
             return true;
@@ -4057,10 +4122,109 @@ export HYPRISM_PROFILE_ID=""{profile.Id}""
     }
 
     // Game
+    private bool _skipLaunchAfterDownload = false;
+    
+    /// <summary>
+    /// Launches the currently installed game without checking for updates or downloading.
+    /// Used by the PLAY button when there's an available update that the user wants to skip.
+    /// </summary>
+    public async Task<DownloadProgress> LaunchOnlyAsync()
+    {
+        if (_mainWindow == null)
+        {
+            return new DownloadProgress { Error = "No window available" };
+        }
+        
+        try
+        {
+            string branch = NormalizeVersionType(_config.VersionType);
+            int targetVersion = _config.SelectedVersion > 0 ? _config.SelectedVersion : 0;
+            
+            // For latest (0), find the actual installed version
+            string versionPath;
+            if (targetVersion == 0)
+            {
+                versionPath = GetLatestInstancePath(branch);
+            }
+            else
+            {
+                versionPath = Path.Combine(GetBranchPath(branch), targetVersion.ToString());
+            }
+            
+            if (!Directory.Exists(versionPath))
+            {
+                return new DownloadProgress { Error = "Game is not installed" };
+            }
+            
+            // Check if game client exists
+            string clientPath;
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+            {
+                clientPath = Path.Combine(versionPath, "Client", "Hytale.app", "Contents", "MacOS", "HytaleClient");
+            }
+            else if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            {
+                clientPath = Path.Combine(versionPath, "Client", "HytaleClient.exe");
+            }
+            else
+            {
+                clientPath = Path.Combine(versionPath, "Client", "HytaleClient");
+            }
+            
+            if (!File.Exists(clientPath))
+            {
+                return new DownloadProgress { Error = "Game client not found. Please download the game first." };
+            }
+            
+            Logger.Info("Game", "Launching game without update check...");
+            SendProgress(_mainWindow, "launch", 100, "Launching game...", 0, 0);
+            
+            await LaunchGameAsync(versionPath, branch);
+            
+            return new DownloadProgress { Success = true };
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("Game", $"Failed to launch game: {ex.Message}");
+            return new DownloadProgress { Error = ex.Message };
+        }
+    }
+    
+    /// <summary>
+    /// Downloads/updates the game without launching. Used by the UPDATE button.
+    /// </summary>
+    public async Task<DownloadProgress> DownloadOnlyAsync()
+    {
+        // Use the main window if available
+        if (_mainWindow == null)
+        {
+            return new DownloadProgress { Error = "No window available for progress updates" };
+        }
+        
+        // Set flag to skip launch after download completes
+        _skipLaunchAfterDownload = true;
+        
+        try
+        {
+            return await DownloadAndLaunchAsync(_mainWindow);
+        }
+        finally
+        {
+            _skipLaunchAfterDownload = false;
+        }
+    }
+
     public async Task<DownloadProgress> DownloadAndLaunchAsync(PhotinoWindow window)
     {
         try
         {
+            // Cancel any existing download before starting a new one
+            if (_downloadCts != null)
+            {
+                Logger.Info("Download", "Cancelling previous download to start new one...");
+                _downloadCts.Cancel();
+                await Task.Delay(100); // Give it a moment to clean up
+            }
             _downloadCts = new CancellationTokenSource();
             
             string branch = NormalizeVersionType(_config.VersionType);
@@ -4094,13 +4258,17 @@ export HYPRISM_PROFILE_ID=""{profile.Id}""
             if (gameIsInstalled)
             {
                 Logger.Success("Download", "Game is already installed");
+                Logger.Info("Download", $"Checking for updates: isLatestInstance={isLatestInstance}, _config.SelectedVersion={_config.SelectedVersion}");
                 
                 // Check if we need a differential update (only for latest instance)
                 if (isLatestInstance)
                 {
+                    Logger.Info("Download", "Entering latest instance update check...");
                     var info = LoadLatestInfo(branch);
                     int installedVersion = info?.Version ?? 0;
                     int latestVersion = versions[0];
+                    
+                    Logger.Info("Download", $"Version check: installed={installedVersion}, latest={latestVersion}, isLatestInstance={isLatestInstance}");
                     
                     // If no latest.json exists, we need to determine the installed version
                     if (installedVersion == 0)
@@ -4305,6 +4473,13 @@ export HYPRISM_PROFILE_ID=""{profile.Id}""
                     }
                 }
                 
+                // Check if we should skip launch (UPDATE button was pressed)
+                if (_skipLaunchAfterDownload)
+                {
+                    SendProgress(window, "complete", 100, "Update complete!", 0, 0);
+                    return new DownloadProgress { Success = true, Progress = 100 };
+                }
+                
                 SendProgress(window, "complete", 100, "Launching game...", 0, 0);
                 try
                 {
@@ -4503,6 +4678,13 @@ export HYPRISM_PROFILE_ID=""{profile.Id}""
 
             // Ensure instance.json exists for this instance
             EnsureInstanceInfo(branch, isLatestInstance ? 0 : targetVersion);
+
+            // Check if we should skip launch (UPDATE button was pressed)
+            if (_skipLaunchAfterDownload)
+            {
+                SendProgress(window, "complete", 100, "Download complete!", 0, 0);
+                return new DownloadProgress { Success = true, Progress = 100 };
+            }
 
             SendProgress(window, "complete", 100, "Launching game...", 0, 0);
 
@@ -5843,22 +6025,35 @@ export HYPRISM_PROFILE_ID=""{profile.Id}""
             Logger.Warning("Game", $"Could not verify Java: {ex.Message}");
         }
 
-        // Use the active profile's UserData folder - each profile has its own
-        // This keeps skins, settings, mods, and all user data separate per profile
+        // STEP 3: Set up UserData folder with profile symlink
+        // UserData is stored in the profile folder and symlinked to the instance
+        // This keeps skins, settings, mods separate per profile
         var currentProfile = _config.Profiles?.FirstOrDefault(p => p.UUID == sessionUuid);
         string userDataDir;
+        
         if (currentProfile != null)
         {
-            userDataDir = GetProfileUserDataFolder(currentProfile);
-            Logger.Info("Game", $"Using profile UserData: {userDataDir}");
+            // Get the profile's UserData folder (stored in profile directory)
+            var profileUserDataPath = GetProfileUserDataFolder(currentProfile);
+            Directory.CreateDirectory(profileUserDataPath);
+            
+            // Get the instance UserData path (where game expects it)
+            var instanceUserDataPath = GetInstanceUserDataPath(versionPath);
+            
+            // Create symlink: instance/UserData -> profile/UserData
+            CreateUserDataSymlink(instanceUserDataPath, profileUserDataPath);
+            
+            // Use instance path for game launch (symlink points to profile)
+            userDataDir = instanceUserDataPath;
+            Logger.Info("Game", $"Using profile UserData: {profileUserDataPath} (symlinked to {instanceUserDataPath})");
         }
         else
         {
             // Fallback to instance UserData if no profile found
             userDataDir = GetInstanceUserDataPath(versionPath);
+            Directory.CreateDirectory(userDataDir);
             Logger.Warning("Game", "No active profile found, using instance UserData");
         }
-        Directory.CreateDirectory(userDataDir);
         
         // Restore current profile's skin data before launching the game
         // This ensures the player's custom skin is loaded from their profile
@@ -5908,8 +6103,6 @@ export HYPRISM_PROFILE_ID=""{profile.Id}""
             startInfo.ArgumentList.Add(javaPath);
             startInfo.ArgumentList.Add("--name");
             startInfo.ArgumentList.Add(_config.Nick);
-            startInfo.ArgumentList.Add("--log-verbosity");
-            startInfo.ArgumentList.Add("0");  // Reduce annoying game logs
             
             // Add auth mode based on user's OnlineMode preference
             // If OnlineMode is OFF, always use offline mode regardless of tokens
@@ -5947,8 +6140,7 @@ export HYPRISM_PROFILE_ID=""{profile.Id}""
                 $"--app-dir \"{gameDir}\"",
                 $"--user-dir \"{userDataDir}\"",
                 $"--java-exec \"{javaPath}\"",
-                $"--name \"{_config.Nick}\"",
-                "--log-verbosity 0"  // Reduce annoying game logs
+                $"--name \"{_config.Nick}\""
             };
             
             // Add auth mode based on user's OnlineMode preference

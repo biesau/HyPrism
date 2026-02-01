@@ -3,37 +3,80 @@ using System.Collections.Generic;
 
 namespace HyPrism.Backend;
 
+public enum AppLogLevel
+{
+    Debug = 0,
+    Info = 1,
+    Success = 2,
+    Warning = 3,
+    Error = 4,
+    None = 5  // Completely silent
+}
+
 public static class Logger
 {
     private static readonly object _lock = new();
     private static readonly Queue<string> _logBuffer = new();
     private const int MaxLogEntries = 100;
     
+    // Default: only show Success, Warning, and Error messages
+    public static AppLogLevel MinimumLevel { get; set; } = AppLogLevel.Success;
+    
     public static void Info(string category, string message)
     {
-        WriteLog("INFO", category, message, ConsoleColor.White);
+        if (MinimumLevel <= AppLogLevel.Info)
+            WriteLog("INFO", category, message, ConsoleColor.White);
+        else
+            BufferOnly("INFO", category, message);
     }
     
     public static void Success(string category, string message)
     {
-        WriteLog("OK", category, message, ConsoleColor.Green);
+        if (MinimumLevel <= AppLogLevel.Success)
+            WriteLog("OK", category, message, ConsoleColor.Green);
+        else
+            BufferOnly("OK", category, message);
     }
     
     public static void Warning(string category, string message)
     {
-        WriteLog("WARN", category, message, ConsoleColor.Yellow);
+        if (MinimumLevel <= AppLogLevel.Warning)
+            WriteLog("WARN", category, message, ConsoleColor.Yellow);
+        else
+            BufferOnly("WARN", category, message);
     }
     
     public static void Error(string category, string message)
     {
-        WriteLog("ERR", category, message, ConsoleColor.Red);
+        if (MinimumLevel <= AppLogLevel.Error)
+            WriteLog("ERR", category, message, ConsoleColor.Red);
+        else
+            BufferOnly("ERR", category, message);
     }
     
     public static void Debug(string category, string message)
     {
 #if DEBUG
-        WriteLog("DBG", category, message, ConsoleColor.Gray);
+        if (MinimumLevel <= AppLogLevel.Debug)
+            WriteLog("DBG", category, message, ConsoleColor.Gray);
+        else
+            BufferOnly("DBG", category, message);
 #endif
+    }
+    
+    // Add to buffer without printing (for log retrieval later)
+    private static void BufferOnly(string level, string category, string message)
+    {
+        lock (_lock)
+        {
+            var timestamp = DateTime.Now.ToString("HH:mm:ss");
+            var logEntry = $"{timestamp} | {level} | {category} | {message}";
+            _logBuffer.Enqueue(logEntry);
+            while (_logBuffer.Count > MaxLogEntries)
+            {
+                _logBuffer.Dequeue();
+            }
+        }
     }
     
     public static List<string> GetRecentLogs(int count = 10)
