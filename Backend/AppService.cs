@@ -8407,7 +8407,7 @@ rm -f ""$0""
             // Get mod details for more info
             var modUrl = $"https://api.curseforge.com/v1/mods/{modId}";
             using var modRequest = new HttpRequestMessage(HttpMethod.Get, modUrl);
-            modRequest.Headers.Add("x-api-key", "$2a$10$1W4EvLWzLe4.RM1kcxW9n.vxmBPEYcg9dvpT4r5OAlkQk/.6jQE4e");
+            modRequest.Headers.Add("x-api-key", "curseforgeapikey");
             
             using var modResponse = await HttpClient.SendAsync(modRequest);
             if (!modResponse.IsSuccessStatusCode)
