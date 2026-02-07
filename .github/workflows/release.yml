@@ -297,7 +297,7 @@ jobs:
           ln -s /Applications dmg/Applications
           
           # Create the "Fix Permissions" command file
-          cat > "dmg/Fix Permissions (Run First).command" << 'EOF'
+          cat > "dmg/Fix Permissions.command" << 'FIXSCRIPT'
           #!/bin/bash
           # This script removes quarantine attributes from HyPrism
           # Run this if macOS says the app is damaged or can't be opened
@@ -311,8 +311,8 @@ jobs:
           echo "Done! You can now open HyPrism.app"
           echo "Press any key to close this window..."
           read -n 1
-          EOF
-          chmod +x "dmg/Fix Permissions (Run First).command"
+          FIXSCRIPT
+          chmod +x "dmg/Fix Permissions.command"
           
           # Use specific background image
           SELECTED_BG="packaging/macos/dmg-background.jpg"
@@ -336,27 +336,27 @@ jobs:
             
             # Set up DMG appearance with AppleScript
             osascript <<'APPLESCRIPT'
-          tell application "Finder"
-            tell disk "HyPrism"
-              open
-              set current view of container window to icon view
-              set toolbar visible of container window to false
-              set statusbar visible of container window to false
-              set the bounds of container window to {400, 200, 1040, 680}
-              set viewOptions to the icon view options of container window
-              set arrangement of viewOptions to not arranged
-              set icon size of viewOptions to 128
-              set background picture of viewOptions to file ".background:background.jpg"
-              set position of item "HyPrism.app" of container window to {120, 220}
-              set position of item "Applications" of container window to {500, 220}
-              set position of item "Fix Permissions.command" of container window to {310, 400}
-              close
-              open
-              update without registering applications
-              delay 5
+            tell application "Finder"
+              tell disk "HyPrism"
+                open
+                set current view of container window to icon view
+                set toolbar visible of container window to false
+                set statusbar visible of container window to false
+                set the bounds of container window to {400, 200, 1040, 680}
+                set viewOptions to the icon view options of container window
+                set arrangement of viewOptions to not arranged
+                set icon size of viewOptions to 128
+                set background picture of viewOptions to file ".background:background.jpg"
+                set position of item "HyPrism.app" of container window to {120, 220}
+                set position of item "Applications" of container window to {500, 220}
+                set position of item "Fix Permissions.command" of container window to {310, 400}
+                close
+                open
+                update without registering applications
+                delay 5
+              end tell
             end tell
-          end tell
-          APPLESCRIPT
+            APPLESCRIPT
             
             sync
             hdiutil detach "$MOUNT_POINT"
