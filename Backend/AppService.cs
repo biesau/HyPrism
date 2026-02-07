@@ -3430,7 +3430,7 @@ export HYPRISM_PROFILE_ID=""{profile.Id}""
     public string GetLauncherVersion()
     {
         // Unified launcher version for all branches
-        return "2.0.3";
+        return "2.0.4";
     }
 
     /// <summary>
